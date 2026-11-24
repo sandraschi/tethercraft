@@ -1,5 +1,7 @@
 //! Device keys (Ed25519), fingerprint words, SPAKE2 PAKE, pinned-key transport config.
 
+pub mod sealed;
+
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;

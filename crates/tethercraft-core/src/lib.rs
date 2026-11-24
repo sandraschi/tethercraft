@@ -2,6 +2,11 @@
 //!
 //! Native protocol only. No RustDesk code is referenced anywhere.
 
+pub mod agent;
+pub mod deploy;
+pub mod risk;
+pub mod trust;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;

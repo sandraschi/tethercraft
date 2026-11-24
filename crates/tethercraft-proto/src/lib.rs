@@ -18,12 +18,31 @@ pub enum MessageKind {
     PairingWelcome,
     PakeA,
     PakeB,
+    OtpProof,
     SessionStart,
     SessionEnd,
     Frame,
     InputEvent,
     ClipboardText,
     ClipboardImage,
+    ClipboardFiles,
+    FileList,
+    FileGet,
+    FilePut,
+    FileChunk,
+    FileDone,
+    ChatMsg,
+    NoteSet,
+    TermOpen,
+    TermData,
+    TermClose,
+    TunnelOpen,
+    TunnelData,
+    TunnelClose,
+    AudioFrame,
+    SyncPlan,
+    SyncChunk,
+    ExecRequest,
     Ping,
     Pong,
 }
@@ -148,5 +167,60 @@ mod tests {
         assert!(validate_transfer_path("/etc/passwd").is_err());
         assert!(validate_transfer_path("a/../../b").is_err());
         assert!(validate_transfer_path("").is_err());
+    }
+
+    #[test]
+    fn every_tier2_kind_roundtrips() {
+        let kinds = [
+            MessageKind::OtpProof,
+            MessageKind::ClipboardFiles,
+            MessageKind::FileList,
+            MessageKind::FileGet,
+            MessageKind::FilePut,
+            MessageKind::FileChunk,
+            MessageKind::FileDone,
+            MessageKind::ChatMsg,
+            MessageKind::NoteSet,
+            MessageKind::TermOpen,
+            MessageKind::TermData,
+            MessageKind::TermClose,
+            MessageKind::TunnelOpen,
+            MessageKind::TunnelData,
+            MessageKind::TunnelClose,
+            MessageKind::AudioFrame,
+            MessageKind::SyncPlan,
+            MessageKind::SyncChunk,
+            MessageKind::ExecRequest,
+        ];
+        for kind in kinds {
+            let env = Envelope::new(kind, [3u8; 32], vec![7]);
+            let bytes = env.encode().unwrap_or_default();
+            assert!(!bytes.is_empty());
+            let back = Envelope::decode(&bytes).unwrap_or(Envelope::new(
+                MessageKind::Ping,
+                [0u8; 32],
+                Vec::new(),
+            ));
+            assert!(back.kind == kind);
+        }
+    }
+
+    #[test]
+    fn garbage_never_panics_only_errors() {
+        let samples: [&[u8]; 6] = [
+            b"",
+            b"\x00",
+            b"hello world",
+            &[255u8; 64],
+            &[1, 2, 3],
+            &[0xde, 0xad, 0xbe, 0xef],
+        ];
+        for s in samples {
+            // Must return Err, never panic (deny panic is enforced by the crate lints).
+            assert!(Envelope::decode(s).is_err());
+        }
+        // Oversize frame is rejected before parsing.
+        let big = vec![9u8; MAX_ENVELOPE_BYTES + 256];
+        assert!(Envelope::decode(&big).is_err());
     }
 }
