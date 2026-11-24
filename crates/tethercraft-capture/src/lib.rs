@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 use tethercraft_core::TetherError;
 
+#[cfg(windows)]
+pub mod wgc;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Backend {
     Wgc,
@@ -52,11 +55,29 @@ pub fn fake_frame(width: u32, height: u32, frame_no: u64) -> (FrameMeta, Vec<u8>
     (meta, px)
 }
 
-/// Live capture entry point. Real WGC wiring lands with the two-machine run.
-pub fn capture_one(_backend: Backend) -> Result<(FrameMeta, Vec<u8>), TetherError> {
-    Err(TetherError::NotImplemented(
-        "live capture needs the Windows WGC run (Tier 1 exit)".to_string(),
-    ))
+/// Grab one live frame from the primary monitor (WGC on Windows).
+/// Fails honestly where there is no display to capture.
+pub fn live_frame(timeout: std::time::Duration) -> Result<(FrameMeta, Vec<u8>), TetherError> {
+    #[cfg(windows)]
+    {
+        let (width, height, rgba) = wgc::grab_primary(timeout)?;
+        Ok((
+            FrameMeta {
+                width,
+                height,
+                backend: Backend::Wgc,
+                frame_no: 0,
+            },
+            rgba,
+        ))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = timeout;
+        Err(TetherError::NotImplemented(
+            "live capture is Windows-only in Tier 1".to_string(),
+        ))
+    }
 }
 
 /// A physical or virtual monitor. Enumeration needs the OS; until then the
@@ -150,8 +171,21 @@ mod tests {
     }
 
     #[test]
-    fn live_capture_is_explicit_not_implemented() {
-        assert!(capture_one(Backend::Fake).is_err());
+    fn live_frame_attempts_real_capture() {
+        // Goliath has a display, so this grabs a real frame. On a headless
+        // machine it fails cleanly; either way it must never panic.
+        let r = live_frame(std::time::Duration::from_secs(3));
+        #[cfg(windows)]
+        {
+            if let Ok((meta, px)) = r {
+                assert!(px.len() == meta.width as usize * meta.height as usize * 4);
+                assert!(meta.backend == Backend::Wgc);
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(r.is_err());
+        }
     }
 
     #[test]

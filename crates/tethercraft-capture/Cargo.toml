@@ -11,3 +11,6 @@ tethercraft-core = { path = "../tethercraft-core" }
 
 [lints]
 workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-capture = "1.4"

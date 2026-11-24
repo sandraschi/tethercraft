@@ -9,9 +9,15 @@ serde = { workspace = true }
 chrono = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+enigo = "0.2"
+ed25519-dalek = { workspace = true }
 thiserror = { workspace = true }
 tethercraft-core = { path = "../tethercraft-core" }
 tethercraft-proto = { path = "../tethercraft-proto" }
+tethercraft-net = { path = "../tethercraft-net" }
+tethercraft-input = { path = "../tethercraft-input" }
+tethercraft-capture = { path = "../tethercraft-capture" }
+tethercraft-store = { path = "../tethercraft-store" }
 
 [lints]
 workspace = true
