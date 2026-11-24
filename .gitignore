@@ -1,0 +1,10 @@
+target/
+dist/
+*.exe
+*.zip
+*.mcpb
+*.pdb
+*.bak
+*.bak.*
+.env
+.DS_Store
