@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0 - 2026-11-25
+
+- Cross-OS session verified: static Linux controller (`tethercraft-probe`,
+  x86_64-musl) in an Ubuntu 24.04 VirtualBox guest drove a Windows host
+  through NAT. Dial 2 ms, handshake 4 ms, synthetic 640x360 at 9.1 fps,
+  real 1920x1080 capture, input applied, wrong password refused both ends.
+- `tethercraft-probe`: GUI-free controller for cross-OS checks.
+- `docs/BENCH.md` records the numbers and why raw RGBA is the current limit.
+- 98 tests green; clippy and fmt clean.
+
 ## 0.6.0 - 2026-11-24
 
 - **Live sessions work on one machine.** Native TCP transport with length

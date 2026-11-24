@@ -62,7 +62,8 @@ comparison, not a certificate authority.
 | `tethercraft-server` | Self-hosted rendezvous and relay placeholder (Tier 3, not implemented) |
 | `tethercraft-store` | SQLite address book, settings, audit log |
 | `tethercraft-mcp` | stdio MCP server, read tools |
-| `tethercraft-app` | CLI (`status`, `id`, `peers`, `peer-info`, `connect`, `screenshot`, `book`, `audit`, `wake`, `files`, `sync`, `broadcast-file`, `collect-files`, `batch`, `restart`, `shutdown`, `lock`, `exec`, `tunnel`, `recordings`, `update-check`, `platform`, `gui`, `server`) with `--json`, plus the egui controller window |
+| `tethercraft-app` | CLI (`status`, `id`, `peers`, `peer-info`, `connect`, `screenshot`, `book`, `audit`, `wake`, `files`, `sync`, `broadcast-file`, `collect-files`, `batch`, `restart`, `shutdown`, `lock`, `exec`, `tunnel`, `recordings`, `update-check`, `platform`, `host`, `serve`, `gui`, `server`) with `--json`, plus the egui controller window |
+| `tethercraft-probe` | Headless controller for cross-OS testing; no GUI, capture, store or codec deps, so it cross-compiles (`x86_64-unknown-linux-musl`) and runs as a Linux controller against a Windows host |
 
 ## Feature matrix (PRD section 6 rows)
 
