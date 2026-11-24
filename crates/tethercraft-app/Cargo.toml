@@ -23,6 +23,7 @@ tethercraft-net = { path = "../tethercraft-net" }
 tethercraft-proto = { path = "../tethercraft-proto" }
 tethercraft-store = { path = "../tethercraft-store" }
 tethercraft-host = { path = "../tethercraft-host" }
+tethercraft-input = { path = "../tethercraft-input" }
 tethercraft-server = { path = "../tethercraft-server" }
 
 [lints]

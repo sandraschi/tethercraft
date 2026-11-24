@@ -11,6 +11,7 @@ pub struct PeerRow {
     pub alias: Option<String>,
     pub pubkey_hex: String,
     pub tier: String,
+    pub addr: Option<String>,
 }
 
 pub struct Store {
@@ -57,6 +58,10 @@ impl Store {
                 );",
             )
             .map_err(|e| TetherError::Storage(format!("init: {e}")))?;
+        // Best-effort migration for stores created before the addr column.
+        let _ = self
+            .conn
+            .execute("ALTER TABLE peers ADD COLUMN addr TEXT", []);
         Ok(())
     }
 
@@ -65,16 +70,17 @@ impl Store {
         peer_id: &str,
         alias: Option<&str>,
         pubkey_hex: &str,
+        addr: Option<&str>,
     ) -> Result<(), TetherError> {
         if peer_id.is_empty() || pubkey_hex.is_empty() {
             return Err(TetherError::Invalid("peer id and key required".to_string()));
         }
         self.conn
             .execute(
-                "INSERT INTO peers(peer_id, alias, pubkey_hex, tier)
-                 VALUES(?1, ?2, ?3, 'stranger')
-                 ON CONFLICT(peer_id) DO UPDATE SET alias=excluded.alias, pubkey_hex=excluded.pubkey_hex",
-                params![peer_id, alias, pubkey_hex],
+                "INSERT INTO peers(peer_id, alias, pubkey_hex, tier, addr)
+                 VALUES(?1, ?2, ?3, 'stranger', ?4)
+                 ON CONFLICT(peer_id) DO UPDATE SET alias=excluded.alias, pubkey_hex=excluded.pubkey_hex, addr=excluded.addr",
+                params![peer_id, alias, pubkey_hex, addr],
             )
             .map_err(|e| TetherError::Storage(format!("add_peer: {e}")))?;
         Ok(())
@@ -83,7 +89,7 @@ impl Store {
     pub fn list_peers(&self) -> Result<Vec<PeerRow>, TetherError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT peer_id, alias, pubkey_hex, tier FROM peers ORDER BY peer_id")
+            .prepare("SELECT peer_id, alias, pubkey_hex, tier, addr FROM peers ORDER BY peer_id")
             .map_err(|e| TetherError::Storage(format!("list: {e}")))?;
         let rows = stmt
             .query_map([], |r| {
@@ -92,6 +98,7 @@ impl Store {
                     alias: r.get(1)?,
                     pubkey_hex: r.get(2)?,
                     tier: r.get(3)?,
+                    addr: r.get(4)?,
                 })
             })
             .map_err(|e| TetherError::Storage(format!("list: {e}")))?;
@@ -183,8 +190,10 @@ mod tests {
         let opened = Store::open_in_memory();
         assert!(opened.is_ok());
         if let Ok(s) = opened {
-            assert!(s.add_peer("p1", Some("Office PC"), "ab12").is_ok());
-            assert!(s.add_peer("", None, "x").is_err());
+            assert!(s
+                .add_peer("p1", Some("Office PC"), "ab12", Some("127.0.0.1:21120"))
+                .is_ok());
+            assert!(s.add_peer("", None, "x", None).is_err());
             let peers = s.list_peers().unwrap_or_default();
             assert!(peers.len() == 1);
             assert!(peers[0].tier == "stranger");

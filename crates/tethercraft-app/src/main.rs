@@ -29,6 +29,10 @@ enum Cmd {
         peer: String,
         #[arg(long, default_value_t = false)]
         view_only: bool,
+        #[arg(long)]
+        password_file: Option<String>,
+        #[arg(long)]
+        headless: Option<String>,
     },
     Screenshot {
         peer: String,
@@ -112,6 +116,31 @@ enum Cmd {
         #[arg(long, default_value_t = 21116)]
         port: u16,
     },
+    Host {
+        #[arg(long, default_value_t = 21120)]
+        port: u16,
+        #[arg(long)]
+        password_file: Option<String>,
+        #[arg(long)]
+        grants: Option<String>,
+        #[arg(long, default_value_t = 10)]
+        fps: u8,
+        #[arg(long, default_value_t = false)]
+        fake_frames: bool,
+    },
+    Serve {
+        peer: String,
+        #[arg(long)]
+        password_file: Option<String>,
+        #[arg(long, default_value_t = false)]
+        view_only: bool,
+        #[arg(long)]
+        out: Option<String>,
+        #[arg(long, default_value_t = 10)]
+        frames: u32,
+        #[arg(long, default_value_t = false)]
+        input_probe: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -122,6 +151,8 @@ enum BookOp {
         key: String,
         #[arg(long)]
         alias: Option<String>,
+        #[arg(long)]
+        addr: Option<String>,
     },
     Rm {
         peer: String,
@@ -234,6 +265,101 @@ fn live_only(what: &str) -> Result<(), TetherError> {
     )))
 }
 
+/// Read a password from a file (or stdin with `-`). Never from argv, never logged.
+fn load_password(path: Option<&str>) -> Result<Vec<u8>, TetherError> {
+    match path {
+        Some("-") => {
+            let mut s = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut s)
+                .map_err(|e| TetherError::Invalid(format!("stdin: {e}")))?;
+            Ok(s.trim_end_matches(['\r', '\n']).as_bytes().to_vec())
+        }
+        Some(p) => {
+            let s = std::fs::read_to_string(p)
+                .map_err(|e| TetherError::Invalid(format!("password file: {e}")))?;
+            Ok(s.trim_end_matches(['\r', '\n']).as_bytes().to_vec())
+        }
+        None => Err(TetherError::Invalid(
+            "a password is required: pass --password-file, or - to read stdin".to_string(),
+        )),
+    }
+}
+
+/// Parse `--grants keyboard,touch` into host permissions.
+fn parse_grants(spec: &str) -> Result<Vec<tethercraft_core::Permission>, TetherError> {
+    use tethercraft_core::Permission as P;
+    let mut out = Vec::new();
+    for part in spec.split(',') {
+        let p = match part.trim() {
+            "" => continue,
+            "keyboard" | "input" => P::Keyboard,
+            "touch" => P::Touch,
+            "clipboard" => P::Clipboard,
+            "file" | "files" => P::File,
+            "audio" => P::Audio,
+            "terminal" => P::Terminal,
+            "privacy" => P::Privacy,
+            "camera" => P::Camera,
+            "tunnel" => P::Tunnel,
+            "restart" => P::Restart,
+            other => {
+                return Err(TetherError::Invalid(format!(
+                    "unknown grant '{other}' (keyboard, touch, clipboard, file, audio, terminal, privacy, camera, tunnel, restart)"
+                )))
+            }
+        };
+        out.push(p);
+    }
+    Ok(out)
+}
+
+fn grant_names(grants: &[tethercraft_core::Permission]) -> Vec<String> {
+    grants
+        .iter()
+        .map(|g| format!("{g:?}").to_lowercase())
+        .collect()
+}
+
+/// Open the controller GUI window. Returns after the window closes.
+fn run_gui(peers: Vec<(String, String)>, live: Option<ui::LiveSource>) -> Result<(), TetherError> {
+    let (outgoing, needs_answer, marker) = read_onboarding();
+    let mut app = ui::ControllerUi::new(peers, outgoing, needs_answer, marker);
+    if let Some(l) = live {
+        app.set_live(l);
+    }
+    eframe::run_native(
+        "TetherCraft",
+        eframe::NativeOptions::default(),
+        Box::new(|_cc| Ok(Box::new(app) as Box<dyn eframe::App>)),
+    )
+    .map_err(|e| TetherError::Invalid(format!("gui failed: {e}")))?;
+    Ok(())
+}
+
+fn peer_list() -> Vec<(String, String)> {
+    match open_store().and_then(|s| s.list_peers()) {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|r| (r.peer_id, r.alias.unwrap_or_default()))
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn peer_addr(peer: &str) -> Result<String, TetherError> {
+    let s = open_store()?;
+    let peers = s.list_peers()?;
+    match peers.iter().find(|r| r.peer_id == peer) {
+        Some(r) => match &r.addr {
+            Some(a) if !a.trim().is_empty() => Ok(a.clone()),
+            _ => Err(TetherError::Invalid(format!(
+                "peer {peer} has no address: re-add it with --addr host:port"
+            ))),
+        },
+        None => Err(TetherError::Invalid(format!("unknown peer {peer}"))),
+    }
+}
+
 fn store_path() -> String {
     let base = std::env::var("LOCALAPPDATA")
         .or_else(|_| std::env::var("APPDATA"))
@@ -296,16 +422,27 @@ fn run() -> Result<(), TetherError> {
                 None => Err(TetherError::Invalid(format!("unknown peer {peer}"))),
             }
         }
-        Cmd::Connect { peer, view_only } => {
-            // Tier 1: validate the peer exists, then report partial (no fake session).
-            let s = open_store()?;
-            let peers = s.list_peers()?;
-            if peers.iter().all(|r| r.peer_id != peer) {
-                return Err(TetherError::Invalid(format!("unknown peer {peer}")));
+        Cmd::Connect {
+            peer,
+            view_only,
+            password_file,
+            headless,
+        } => {
+            let addr = peer_addr(&peer)?;
+            match headless {
+                Some(out) => {
+                    let password = load_password(password_file.as_deref())?;
+                    tethercraft_net::session::run_headless_controller(&addr, &password, &out)
+                        .map_err(|e| TetherError::Invalid(format!("connect: {e}")))?;
+                    print_out(cli.json, format!("saved {out}"), json!({"saved": out}));
+                    Ok(())
+                }
+                None => {
+                    let password = load_password(password_file.as_deref())?;
+                    let live = ui::connect_live(&addr, &password, view_only)?;
+                    run_gui(peer_list(), Some(live))
+                }
             }
-            Err(TetherError::NotImplemented(format!(
-                "live connect to {peer} (view_only={view_only}) needs the two-machine QUIC run"
-            )))
         }
         Cmd::Screenshot { peer, out } => Err(TetherError::NotImplemented(format!(
             "screenshot of {peer} to {out} needs a live session (Tier 1 exit)"
@@ -321,9 +458,14 @@ fn run() -> Result<(), TetherError> {
                 );
                 Ok(())
             }
-            BookOp::Add { peer, key, alias } => {
+            BookOp::Add {
+                peer,
+                key,
+                alias,
+                addr,
+            } => {
                 let s = open_store()?;
-                s.add_peer(&peer, alias.as_deref(), &key)?;
+                s.add_peer(&peer, alias.as_deref(), &key, addr.as_deref())?;
                 print_out(cli.json, format!("added {peer}"), json!({"added": peer}));
                 Ok(())
             }
@@ -588,23 +730,7 @@ fn run() -> Result<(), TetherError> {
             );
             Ok(())
         }
-        Cmd::Gui => {
-            let s = open_store()?;
-            let peers = s.list_peers().unwrap_or_default();
-            let list: Vec<(String, String)> = peers
-                .into_iter()
-                .map(|r| (r.peer_id, r.alias.unwrap_or_default()))
-                .collect();
-            let (outgoing, needs_answer, marker) = read_onboarding();
-            let app = ui::ControllerUi::new(list, outgoing, needs_answer, marker);
-            eframe::run_native(
-                "TetherCraft",
-                eframe::NativeOptions::default(),
-                Box::new(|_cc| Ok(Box::new(app) as Box<dyn eframe::App>)),
-            )
-            .map_err(|e| TetherError::Invalid(format!("gui failed: {e}")))?;
-            Ok(())
-        }
+        Cmd::Gui => run_gui(peer_list(), None),
         Cmd::Server { port } => {
             let listener = std::net::TcpListener::bind(format!("0.0.0.0:{port}"))
                 .map_err(|e| TetherError::Invalid(format!("bind: {e}")))?;
@@ -617,6 +743,101 @@ fn run() -> Result<(), TetherError> {
                 listener,
                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             )
+        }
+        Cmd::Host {
+            port,
+            password_file,
+            grants,
+            fps,
+            fake_frames,
+        } => {
+            if fps == 0 || fps > 60 {
+                return Err(TetherError::Invalid("fps must be 1..=60".to_string()));
+            }
+            let password = load_password(password_file.as_deref())?;
+            if password.is_empty() {
+                return Err(TetherError::Invalid("empty password".to_string()));
+            }
+            let grant_list = match grants {
+                Some(g) => parse_grants(&g)?,
+                None => Vec::new(),
+            };
+            let (signing, id, words) = tethercraft_host::serve::ephemeral_identity()?;
+            let store = open_store()?;
+            let listener = tethercraft_net::session::listen(&format!("0.0.0.0:{port}"))?;
+            let cfg = tethercraft_host::serve::ServeConfig {
+                port,
+                password,
+                grants: grant_list.clone(),
+                fps,
+                fake_frames,
+                outgoing_only: false,
+                stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            };
+            print_out(
+                cli.json,
+                format!(
+                    "hosting on 0.0.0.0:{port}\nid {id}\nwords: {words}\ngrants: {g:?}\nframes: {f}",
+                    g = grant_names(&grant_list),
+                    f = if fake_frames { "synthetic" } else { "live (WGC)" }
+                ),
+                json!({
+                    "port": port,
+                    "id": id,
+                    "words": words,
+                    "grants": grant_names(&grant_list),
+                    "fake_frames": fake_frames,
+                }),
+            );
+            loop {
+                match tethercraft_host::serve::serve_one(&listener, &cfg, &signing, &store) {
+                    Ok(report) => {
+                        print_out(
+                            cli.json,
+                            format!(
+                                "session with {p}: frames {f}, inputs {i}, denied {d}, ended {e}",
+                                p = report.peer_id,
+                                f = report.frames_sent,
+                                i = report.inputs_applied,
+                                d = report.denied_inputs,
+                                e = report.ended
+                            ),
+                            json!({
+                                "peer": report.peer_id,
+                                "frames": report.frames_sent,
+                                "inputs": report.inputs_applied,
+                                "denied": report.denied_inputs,
+                                "ended": report.ended,
+                            }),
+                        );
+                    }
+                    Err(e) => eprintln!("session error: {e}"),
+                }
+            }
+        }
+        Cmd::Serve {
+            peer,
+            password_file,
+            view_only,
+            out,
+            frames,
+            input_probe,
+        } => {
+            let addr = peer_addr(&peer)?;
+            let password = load_password(password_file.as_deref())?;
+            let saved = tethercraft_net::session::run_headless_controller_count(
+                &addr,
+                &password,
+                frames,
+                out.as_deref(),
+                input_probe,
+            )?;
+            print_out(
+                cli.json,
+                format!("received {n} frames, saved {saved}", n = frames),
+                json!({"frames": frames, "saved": saved, "view_only": view_only}),
+            );
+            Ok(())
         }
     }
 }

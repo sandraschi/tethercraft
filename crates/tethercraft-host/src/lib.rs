@@ -3,8 +3,10 @@
 pub mod agent;
 pub mod camera;
 pub mod files;
+pub mod inject;
 pub mod printer;
 pub mod privacy;
+pub mod serve;
 pub mod shield;
 pub mod sync;
 pub mod terminal;
