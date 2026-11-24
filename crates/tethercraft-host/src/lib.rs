@@ -18,6 +18,9 @@ use tethercraft_proto::MessageKind;
 fn permission_for_kind(kind: MessageKind) -> Option<Permission> {
     match kind {
         MessageKind::InputEvent => Some(Permission::Keyboard),
+        MessageKind::TouchTap | MessageKind::TouchHold | MessageKind::TouchSwipe => {
+            Some(Permission::Touch)
+        }
         MessageKind::ClipboardText | MessageKind::ClipboardImage | MessageKind::ClipboardFiles => {
             Some(Permission::Clipboard)
         }
@@ -249,6 +252,7 @@ mod tests {
         // Audio, privacy, and camera-adjacent controls denied for strangers too.
         assert!(h.authorize("s1", MessageKind::AudioFrame, now).is_err());
         assert!(h.authorize("s1", MessageKind::PrivacyRequest, now).is_err());
+        assert!(h.authorize("s1", MessageKind::TouchTap, now).is_err());
         assert!(h.authorize("s1", MessageKind::OtpProof, now).is_ok());
     }
 

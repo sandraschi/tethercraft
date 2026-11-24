@@ -19,6 +19,9 @@ pub enum MessageKind {
     PakeA,
     PakeB,
     OtpProof,
+    TouchTap,
+    TouchHold,
+    TouchSwipe,
     SessionStart,
     SessionEnd,
     Frame,
@@ -175,6 +178,9 @@ mod tests {
     fn every_tier2_kind_roundtrips() {
         let kinds = [
             MessageKind::OtpProof,
+            MessageKind::TouchTap,
+            MessageKind::TouchHold,
+            MessageKind::TouchSwipe,
             MessageKind::ClipboardFiles,
             MessageKind::FileList,
             MessageKind::FileGet,

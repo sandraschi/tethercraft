@@ -106,6 +106,7 @@ enum Cmd {
         #[arg(long)]
         key: String,
     },
+    Platform,
     Gui,
     Server {
         #[arg(long, default_value_t = 21116)]
@@ -578,6 +579,15 @@ fn run() -> Result<(), TetherError> {
                 }
             }
         }
+        Cmd::Platform => {
+            let info = tethercraft_core::mobile::platform_info();
+            print_out(
+                cli.json,
+                format!("platform {} {}", info.os, info.arch),
+                json!({"platform": info}),
+            );
+            Ok(())
+        }
         Cmd::Gui => {
             let s = open_store()?;
             let peers = s.list_peers().unwrap_or_default();
@@ -679,6 +689,7 @@ mod tests {
         assert!(Cli::try_parse_from(["tethercraft", "exec", "p", "--", "whoami"]).is_ok());
         assert!(Cli::try_parse_from(["tethercraft", "tunnel", "p", "8080:x"]).is_ok());
         assert!(Cli::try_parse_from(["tethercraft", "recordings", "list"]).is_ok());
+        assert!(Cli::try_parse_from(["tethercraft", "platform"]).is_ok());
         assert!(Cli::try_parse_from([
             "tethercraft",
             "update-check",

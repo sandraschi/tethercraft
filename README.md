@@ -40,7 +40,7 @@ outgoing-only with a banner). Frames are synthetic until the live run.
 | `tethercraft-server` | Self-hosted rendezvous and relay placeholder (Tier 3, not implemented) |
 | `tethercraft-store` | SQLite address book, settings, audit log |
 | `tethercraft-mcp` | stdio MCP server, read tools |
-| `tethercraft-app` | CLI (`status`, `id`, `peers`, `peer-info`, `connect`, `screenshot`, `book`, `audit`, `wake`, `files`, `sync`, `broadcast-file`, `collect-files`, `batch`, `restart`, `shutdown`, `lock`, `exec`, `tunnel`, `recordings`, `update-check`, `gui`, `server`) with `--json`, plus the egui controller window |
+| `tethercraft-app` | CLI (`status`, `id`, `peers`, `peer-info`, `connect`, `screenshot`, `book`, `audit`, `wake`, `files`, `sync`, `broadcast-file`, `collect-files`, `batch`, `restart`, `shutdown`, `lock`, `exec`, `tunnel`, `recordings`, `update-check`, `platform`, `gui`, `server`) with `--json`, plus the egui controller window |
 
 ## Feature matrix (PRD section 6 rows)
 
@@ -85,7 +85,7 @@ outgoing-only with a banner). Frames are synthetic until the live run.
 | Platform | Windows x64 and ARM64 (controller and host) | 1 | Partial |
 | Platform | Linux X11 and Wayland, macOS (controller and host) | 3 | Planned |
 | Platform | web client (controller only) | 4 | Planned |
-| Platform | Android (controller and host), iOS (controller) | 5 | Planned |
+| Platform | Android (controller and host), iOS (controller) | 5 | Partial |
 | Pro-class | web console, OIDC/LDAP, strategies, multiple relays, device groups, custom client generator | 6 | Planned |
 | Scam R1 | install-time onboarding, 24 h outgoing-only on yes | 1 | Partial |
 | Scam R2 | peer tiers enforced on host, stranger defaults, 30 min cap, local recording | 1 | Partial |

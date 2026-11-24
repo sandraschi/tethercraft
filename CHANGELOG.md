@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0 - 2026-11-24
+
+- Tier 5 started: touch input kinds with host permission mapping and range
+  validation, controller-only role enforcement (the iOS rule, on every
+  platform), fixed gesture map, frame pacing and battery caps, Android host
+  permission state machine, `tethercraft platform` verb. Same native protocol:
+  a mobile controller already speaks the same envelopes.
+- 92 tests green; clippy and fmt clean. Device builds need real hardware.
+
 ## 0.4.0 - 2026-11-24
 
 - Tier 4 started: `.tetherrec` session recorder with validated playback,

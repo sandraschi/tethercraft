@@ -4,6 +4,7 @@
 
 pub mod agent;
 pub mod deploy;
+pub mod mobile;
 pub mod risk;
 pub mod trust;
 
@@ -41,6 +42,7 @@ pub enum Permission {
     Restart,
     Recording,
     Privacy,
+    Touch,
     InputBlocking,
     ScreenBlanking,
     Unattended,
