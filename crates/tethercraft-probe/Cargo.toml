@@ -1,0 +1,21 @@
+[package]
+name = "tethercraft-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tethercraft-probe"
+path = "src/main.rs"
+
+# Deliberately free of the GUI, capture, store and codec crates: this binary
+# cross-compiles to Linux to act as a headless controller from another machine.
+[dependencies]
+serde_json = { workspace = true }
+tethercraft-core = { path = "../tethercraft-core" }
+tethercraft-input = { path = "../tethercraft-input" }
+tethercraft-net = { path = "../tethercraft-net" }
+tethercraft-proto = { path = "../tethercraft-proto" }
+
+[lints]
+workspace = true

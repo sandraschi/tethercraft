@@ -3587,6 +3587,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tethercraft-probe"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tethercraft-core",
+ "tethercraft-input",
+ "tethercraft-net",
+ "tethercraft-proto",
+]
+
+[[package]]
 name = "tethercraft-proto"
 version = "0.1.0"
 dependencies = [
