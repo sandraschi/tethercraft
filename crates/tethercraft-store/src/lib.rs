@@ -1,0 +1,164 @@
+//! SQLite store: address book, settings, audit log.
+
+use chrono::{DateTime, Utc};
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
+use tethercraft_core::{AuditEvent, TetherError};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerRow {
+    pub peer_id: String,
+    pub alias: Option<String>,
+    pub pubkey_hex: String,
+    pub tier: String,
+}
+
+pub struct Store {
+    conn: Connection,
+}
+
+impl Store {
+    pub fn open_in_memory() -> Result<Self, TetherError> {
+        let conn =
+            Connection::open_in_memory().map_err(|e| TetherError::Storage(format!("open: {e}")))?;
+        let s = Self { conn };
+        s.init()?;
+        Ok(s)
+    }
+
+    pub fn open_file(path: &str) -> Result<Self, TetherError> {
+        let conn =
+            Connection::open(path).map_err(|e| TetherError::Storage(format!("open: {e}")))?;
+        let s = Self { conn };
+        s.init()?;
+        Ok(s)
+    }
+
+    fn init(&self) -> Result<(), TetherError> {
+        self.conn
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS peers(
+                    peer_id TEXT PRIMARY KEY,
+                    alias TEXT,
+                    pubkey_hex TEXT NOT NULL,
+                    tier TEXT NOT NULL DEFAULT 'stranger'
+                );
+                CREATE TABLE IF NOT EXISTS audit(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT NOT NULL,
+                    peer_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    result TEXT NOT NULL
+                );",
+            )
+            .map_err(|e| TetherError::Storage(format!("init: {e}")))?;
+        Ok(())
+    }
+
+    pub fn add_peer(
+        &self,
+        peer_id: &str,
+        alias: Option<&str>,
+        pubkey_hex: &str,
+    ) -> Result<(), TetherError> {
+        if peer_id.is_empty() || pubkey_hex.is_empty() {
+            return Err(TetherError::Invalid("peer id and key required".to_string()));
+        }
+        self.conn
+            .execute(
+                "INSERT INTO peers(peer_id, alias, pubkey_hex, tier)
+                 VALUES(?1, ?2, ?3, 'stranger')
+                 ON CONFLICT(peer_id) DO UPDATE SET alias=excluded.alias, pubkey_hex=excluded.pubkey_hex",
+                params![peer_id, alias, pubkey_hex],
+            )
+            .map_err(|e| TetherError::Storage(format!("add_peer: {e}")))?;
+        Ok(())
+    }
+
+    pub fn list_peers(&self) -> Result<Vec<PeerRow>, TetherError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT peer_id, alias, pubkey_hex, tier FROM peers ORDER BY peer_id")
+            .map_err(|e| TetherError::Storage(format!("list: {e}")))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(PeerRow {
+                    peer_id: r.get(0)?,
+                    alias: r.get(1)?,
+                    pubkey_hex: r.get(2)?,
+                    tier: r.get(3)?,
+                })
+            })
+            .map_err(|e| TetherError::Storage(format!("list: {e}")))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| TetherError::Storage(format!("row: {e}")))?);
+        }
+        Ok(out)
+    }
+
+    pub fn log(&self, ev: &AuditEvent) -> Result<(), TetherError> {
+        self.conn
+            .execute(
+                "INSERT INTO audit(ts, peer_id, action, result) VALUES(?1, ?2, ?3, ?4)",
+                params![ev.at.to_rfc3339(), ev.peer_id, ev.action, ev.result],
+            )
+            .map_err(|e| TetherError::Storage(format!("audit: {e}")))?;
+        Ok(())
+    }
+
+    pub fn list_audit(&self, limit: usize) -> Result<Vec<AuditEvent>, TetherError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT ts, peer_id, action, result FROM audit ORDER BY id DESC LIMIT ?1")
+            .map_err(|e| TetherError::Storage(format!("audit list: {e}")))?;
+        let rows = stmt
+            .query_map(params![limit as i64], |r| {
+                let ts: String = r.get(0)?;
+                Ok((
+                    ts,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| TetherError::Storage(format!("audit list: {e}")))?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (ts, peer_id, action, result) =
+                r.map_err(|e| TetherError::Storage(format!("row: {e}")))?;
+            let at = ts
+                .parse::<DateTime<Utc>>()
+                .unwrap_or(DateTime::<Utc>::MIN_UTC);
+            out.push(AuditEvent {
+                at,
+                peer_id,
+                action,
+                result,
+            });
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peers_and_audit() {
+        let opened = Store::open_in_memory();
+        assert!(opened.is_ok());
+        if let Ok(s) = opened {
+            assert!(s.add_peer("p1", Some("Office PC"), "ab12").is_ok());
+            assert!(s.add_peer("", None, "x").is_err());
+            let peers = s.list_peers().unwrap_or_default();
+            assert!(peers.len() == 1);
+            assert!(peers[0].tier == "stranger");
+            let ev = AuditEvent::new(Utc::now(), "p1", "connect", "ok");
+            assert!(s.log(&ev).is_ok());
+            let log = s.list_audit(10).unwrap_or_default();
+            assert!(log.len() == 1);
+        }
+    }
+}
