@@ -1,5 +1,7 @@
 //! Video codecs: one hardware encoder plus VP9 software fallback (interface).
 
+pub mod rec;
+
 use serde::{Deserialize, Serialize};
 use tethercraft_core::TetherError;
 

@@ -1,10 +1,14 @@
 //! Host policy enforcement: every message checked, stranger defaults, caps.
 
 pub mod agent;
+pub mod camera;
 pub mod files;
+pub mod printer;
+pub mod privacy;
 pub mod shield;
 pub mod sync;
 pub mod terminal;
+pub mod voice;
 
 use chrono::{DateTime, Utc};
 use std::collections::{BTreeSet, HashMap};
@@ -32,6 +36,7 @@ fn permission_for_kind(kind: MessageKind) -> Option<Permission> {
             Some(Permission::Tunnel)
         }
         MessageKind::AudioFrame => Some(Permission::Audio),
+        MessageKind::PrivacyRequest | MessageKind::PrivacyEnd => Some(Permission::Privacy),
         MessageKind::Frame
         | MessageKind::ChatMsg
         | MessageKind::NoteSet
@@ -241,7 +246,9 @@ mod tests {
         assert!(h.authorize("s1", MessageKind::TermOpen, now).is_err());
         assert!(h.authorize("s1", MessageKind::ExecRequest, now).is_err());
         assert!(h.authorize("s1", MessageKind::TunnelOpen, now).is_err());
+        // Audio, privacy, and camera-adjacent controls denied for strangers too.
         assert!(h.authorize("s1", MessageKind::AudioFrame, now).is_err());
+        assert!(h.authorize("s1", MessageKind::PrivacyRequest, now).is_err());
         assert!(h.authorize("s1", MessageKind::OtpProof, now).is_ok());
     }
 
