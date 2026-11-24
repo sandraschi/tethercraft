@@ -38,6 +38,7 @@ clap = { version = "4.5", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 thiserror = "2.0"
+eframe = "0.32"
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
