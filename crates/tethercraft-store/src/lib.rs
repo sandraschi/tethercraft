@@ -49,6 +49,11 @@ impl Store {
                     peer_id TEXT NOT NULL,
                     action TEXT NOT NULL,
                     result TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS blocked(
+                    peer_id TEXT PRIMARY KEY,
+                    reason TEXT NOT NULL,
+                    at TEXT NOT NULL
                 );",
             )
             .map_err(|e| TetherError::Storage(format!("init: {e}")))?;
@@ -107,6 +112,34 @@ impl Store {
         Ok(())
     }
 
+    /// R6 "This was a scam": block the peer ID so it can never reconnect.
+    pub fn block_peer(
+        &self,
+        peer_id: &str,
+        reason: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(), TetherError> {
+        if peer_id.is_empty() {
+            return Err(TetherError::Invalid("peer id required".to_string()));
+        }
+        self.conn
+            .execute(
+                "INSERT INTO blocked(peer_id, reason, at) VALUES(?1, ?2, ?3)
+                 ON CONFLICT(peer_id) DO UPDATE SET reason=excluded.reason, at=excluded.at",
+                params![peer_id, reason, now.to_rfc3339()],
+            )
+            .map_err(|e| TetherError::Storage(format!("block: {e}")))?;
+        Ok(())
+    }
+
+    pub fn is_blocked(&self, peer_id: &str) -> bool {
+        let mut stmt = match self.conn.prepare("SELECT 1 FROM blocked WHERE peer_id=?1") {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        stmt.exists(params![peer_id]).unwrap_or(false)
+    }
+
     pub fn list_audit(&self, limit: usize) -> Result<Vec<AuditEvent>, TetherError> {
         let mut stmt = self
             .conn
@@ -159,6 +192,13 @@ mod tests {
             assert!(s.log(&ev).is_ok());
             let log = s.list_audit(10).unwrap_or_default();
             assert!(log.len() == 1);
+            // R6 blocklist.
+            assert!(!s.is_blocked("x"));
+            assert!(s.block_peer("", "scam", Utc::now()).is_err());
+            assert!(s
+                .block_peer("scammer-1", "tech-support scam", Utc::now())
+                .is_ok());
+            assert!(s.is_blocked("scammer-1"));
         }
     }
 }

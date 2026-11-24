@@ -1,5 +1,11 @@
 //! Host policy enforcement: every message checked, stranger defaults, caps.
 
+pub mod agent;
+pub mod files;
+pub mod shield;
+pub mod sync;
+pub mod terminal;
+
 use chrono::{DateTime, Utc};
 use std::collections::{BTreeSet, HashMap};
 use tethercraft_core::{PeerPolicy, PeerTier, Permission, TetherError};
@@ -8,14 +14,34 @@ use tethercraft_proto::MessageKind;
 fn permission_for_kind(kind: MessageKind) -> Option<Permission> {
     match kind {
         MessageKind::InputEvent => Some(Permission::Keyboard),
-        MessageKind::ClipboardText | MessageKind::ClipboardImage => Some(Permission::Clipboard),
-        MessageKind::Frame => None,
-        MessageKind::SessionStart
+        MessageKind::ClipboardText | MessageKind::ClipboardImage | MessageKind::ClipboardFiles => {
+            Some(Permission::Clipboard)
+        }
+        MessageKind::FileList
+        | MessageKind::FileGet
+        | MessageKind::FilePut
+        | MessageKind::FileChunk
+        | MessageKind::FileDone
+        | MessageKind::SyncPlan
+        | MessageKind::SyncChunk => Some(Permission::File),
+        MessageKind::TermOpen
+        | MessageKind::TermData
+        | MessageKind::TermClose
+        | MessageKind::ExecRequest => Some(Permission::Terminal),
+        MessageKind::TunnelOpen | MessageKind::TunnelData | MessageKind::TunnelClose => {
+            Some(Permission::Tunnel)
+        }
+        MessageKind::AudioFrame => Some(Permission::Audio),
+        MessageKind::Frame
+        | MessageKind::ChatMsg
+        | MessageKind::NoteSet
+        | MessageKind::SessionStart
         | MessageKind::SessionEnd
         | MessageKind::PairingHello
         | MessageKind::PairingWelcome
         | MessageKind::PakeA
         | MessageKind::PakeB
+        | MessageKind::OtpProof
         | MessageKind::Ping
         | MessageKind::Pong => None,
     }
@@ -116,6 +142,58 @@ impl Default for Host {
     }
 }
 
+/// In-session text chat and shared notes. Session-level: any peer with a live
+/// session may exchange chat; notes are stored per peer on the host.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ChatEntry {
+    pub at: DateTime<Utc>,
+    pub from: String,
+    pub text: String,
+}
+
+#[derive(Debug, Default)]
+pub struct ChatLog {
+    entries: Vec<ChatEntry>,
+    pub notes: std::collections::HashMap<String, String>,
+}
+
+impl ChatLog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn post(&mut self, from: &str, text: &str, now: DateTime<Utc>) -> Result<(), TetherError> {
+        if text.is_empty() || text.len() > 4096 {
+            return Err(TetherError::Invalid(
+                "chat text must be 1..=4096 chars".to_string(),
+            ));
+        }
+        self.entries.push(ChatEntry {
+            at: now,
+            from: from.to_string(),
+            text: text.to_string(),
+        });
+        if self.entries.len() > 1000 {
+            let excess = self.entries.len() - 1000;
+            self.entries.drain(..excess);
+        }
+        Ok(())
+    }
+
+    pub fn recent(&self, limit: usize) -> Vec<ChatEntry> {
+        let n = limit.min(self.entries.len());
+        self.entries[self.entries.len() - n..].to_vec()
+    }
+
+    pub fn set_note(&mut self, peer: &str, text: &str) -> Result<(), TetherError> {
+        if text.len() > 16384 {
+            return Err(TetherError::Invalid("note too long".to_string()));
+        }
+        self.notes.insert(peer.to_string(), text.to_string());
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +226,33 @@ mod tests {
         let _ = h.granted_mut("s1").insert(Permission::Keyboard);
         assert!(h.authorize("s1", MessageKind::InputEvent, now).is_ok());
         assert!(h.authorize("s1", MessageKind::ClipboardText, now).is_err());
+    }
+
+    #[test]
+    fn tier2_kinds_map_to_permissions() {
+        let mut h = Host::new();
+        let now = t0();
+        let _ = h.session_start("s1", now, false);
+        // Chat and notes are session-level: allowed for strangers.
+        assert!(h.authorize("s1", MessageKind::ChatMsg, now).is_ok());
+        assert!(h.authorize("s1", MessageKind::NoteSet, now).is_ok());
+        // Files, terminal, tunnel, audio all denied for strangers.
+        assert!(h.authorize("s1", MessageKind::FileList, now).is_err());
+        assert!(h.authorize("s1", MessageKind::TermOpen, now).is_err());
+        assert!(h.authorize("s1", MessageKind::ExecRequest, now).is_err());
+        assert!(h.authorize("s1", MessageKind::TunnelOpen, now).is_err());
+        assert!(h.authorize("s1", MessageKind::AudioFrame, now).is_err());
+        assert!(h.authorize("s1", MessageKind::OtpProof, now).is_ok());
+    }
+
+    #[test]
+    fn chat_log_bounds_and_notes() {
+        let mut log = ChatLog::new();
+        let now = t0();
+        assert!(log.post("p1", "", now).is_err());
+        assert!(log.post("p1", "hi", now).is_ok());
+        assert!(log.recent(10).len() == 1);
+        assert!(log.set_note("p1", "callback number").is_ok());
+        assert!(log.set_note("p1", &"x".repeat(20000)).is_err());
     }
 }
