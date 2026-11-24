@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0 - 2026-11-24
+
+- **Live sessions work on one machine.** Native TCP transport with length
+  prefixed envelopes, SPAKE2 handshake with key confirmation, fingerprint words
+  on both ends, host policy checked per message, audit written, graceful end.
+- Real Graphics Capture (WGC) on Windows: primary monitor frame as RGBA, used by
+  `tethercraft host` without `--fake-frames`.
+- Real input injection via enigo: pointer, click, scroll, keys, touch gestures.
+- CLI: `host`, `serve`, live `connect` (GUI or `--headless`), `book add --addr`.
+- Fixed a real bug found by the live run: a timed-out read lost part of a length
+  prefix and desynced the stream, which looked like a corrupt peer. Reads are now
+  blocking on dedicated threads; the unsafe helper is documented as unusable.
+- Measured numbers in `docs/BENCH.md` (loopback only so far).
+- 98 tests green; clippy and fmt clean.
+
 ## 0.5.0 - 2026-11-24
 
 - Tier 5 started: touch input kinds with host permission mapping and range

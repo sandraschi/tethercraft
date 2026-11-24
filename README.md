@@ -13,10 +13,11 @@ native protocol only, Windows only. Clean room: no RustDesk source is opened.
 
 ## Status
 
-Tier 0 done, Tier 1 and Tier 2 domain logic done (live two-machine run still
-pending). Tier 3 started: rendezvous + relay work over loopback TCP and the
-egui controller window with synthetic frames. See `HANDOVER.md` for the live
-state.
+Tier 0 done. Tiers 1-5 domain logic done. **Live single-machine sessions work
+today**: real SPAKE2 handshake, real WGC capture, frames over TCP, input
+injection, host policy enforced per message, audit written. Not yet done: the
+two-machine LAN/Tailscale run, codecs, host service, OS sensors. See
+`HANDOVER.md` and `docs/BENCH.md` for measured numbers.
 
 ## Controller UI
 
@@ -24,7 +25,28 @@ state.
 book, session view, always-visible End session button while connected, Ctrl +
 wheel zoom, audit tail, and the R1 install gate (20-second wait, answer stored
 in `onboarding.txt` next to the store; yes/not-sure enables 24 h
-outgoing-only with a banner). Frames are synthetic until the live run.
+outgoing-only with a banner).
+
+`tethercraft connect <peer>` dials the host, runs the handshake, and opens the
+same window on the live stream: pointer and keyboard input are forwarded to the
+host while the session is not `--view-only`. `tethercraft connect <peer>
+--headless <out.ppm>` runs the same session without a window and saves a frame,
+which is what the scripted checks use.
+
+## Quick start, two ends on one machine
+
+```powershell
+# terminal 1: host, synthetic frames (no GPU needed)
+tethercraft host --port 21120 --password-file pw.txt --grants keyboard --fake-frames
+
+# terminal 2: trust the host, then connect
+tethercraft book add goliath <host-id-hex> --addr 127.0.0.1:21120 --alias Goliath
+tethercraft serve goliath --password-file pw.txt --frames 10 --out frame.ppm
+```
+
+Drop `--fake-frames` for real WGC capture. Compare the fingerprint words printed
+by the host with the ones the controller reports; first-use trust is that
+comparison, not a certificate authority.
 
 ## Layout
 
@@ -48,7 +70,7 @@ outgoing-only with a banner). Frames are synthetic until the live run.
 |---|---|---|---|
 | Session | view and control, view-only, per-permission custom access | 1 | Partial |
 | Session | multi-monitor switch and show-all, restore last monitor on reconnect | 2 | Planned |
-| Session | scaling modes, quality presets, fps cap, remote resolution change, HiDPI/Retina | 1-2 | Planned |
+| Session | scaling modes, quality presets, fps cap, remote resolution change, HiDPI/Retina | 1-2 | Partial |
 | Session | remote cursor, show my cursor, relative mouse mode, stylus | 2-3 | Planned |
 | Session | keyboard modes map / translate / legacy, international layouts, Wayland keyboard | 2-3 | Planned |
 | Session | configurable session shortcuts | 2 | Planned |
@@ -57,8 +79,7 @@ outgoing-only with a banner). Frames are synthetic until the live run.
 | Session | tabs or separate windows | 1 | Planned |
 | Session | screenshot | 1 | Partial |
 | Session | recording (local and host-side storage, visible to host) | 4 | Partial |
-| Video | software codecs VP9 and AV1, hardware H.264/H.265, zero-copy GPU path, 4:4:4 | 1 (one codec), 3 (all) | Partial |
-| Video | virtual display for headless Windows, headless Linux | 4 | Partial |
+| Video | software codecs VP9 and AV1, hardware H.264/H.265, zero-copy GPU path, 4:4:4 | 1 (one codec), 3 (all) | Partial || Video | virtual display for headless Windows, headless Linux | 4 | Partial |
 | Video | privacy mode incl. multi-monitor; macOS privacy mode | 4 | Partial |
 | Data | clipboard text and images | 1 | Partial |
 | Data | clipboard files (copy on one side, paste on the other) | 2 | Partial |
@@ -75,15 +96,13 @@ outgoing-only with a banner). Frames are synthetic until the live run.
 | Access | per-connection and per-user permissions (keyboard, clipboard, file, audio, camera, terminal, printer, tunnel, restart, recording, privacy) | 1-2 | Partial |
 | Access | IP allowlist, LAN discovery, direct IP access | 1 | Planned |
 | Access | audit log with controller attribution | 1 | Partial |
-| Net | direct LAN and Tailscale/WireGuard addresses | 1 | Partial |
-| Net | rendezvous + relay server (self-hosted, one binary), UDP/TCP hole punching, IPv6, relay fallback, force relay | 3 | Partial |
+| Net | direct LAN and Tailscale/WireGuard addresses | 1 | Partial || Net | rendezvous + relay server (self-hosted, one binary), UDP/TCP hole punching, IPv6, relay fallback, force relay | 3 | Partial |
 | Net | WebSocket transport for proxies and web client; SOCKS5 and HTTP proxy | 3-4 | Planned |
 | Manage | address book with tags, aliases, favourites, recent, discovered | 1 | Partial |
 | Manage | Wake-on-LAN | 1 | Partial |
 | Manage | deployment: config string import/export, silent install, MSI, set/get ID, set password | 2 | Partial |
 | Manage | signed auto-update (metadata signature verified before download) | 4 | Partial |
-| Platform | Windows x64 and ARM64 (controller and host) | 1 | Partial |
-| Platform | Linux X11 and Wayland, macOS (controller and host) | 3 | Planned |
+| Platform | Windows x64 and ARM64 (controller and host) | 1 | Partial || Platform | Linux X11 and Wayland, macOS (controller and host) | 3 | Planned |
 | Platform | web client (controller only) | 4 | Planned |
 | Platform | Android (controller and host), iOS (controller) | 5 | Partial |
 | Pro-class | web console, OIDC/LDAP, strategies, multiple relays, device groups, custom client generator | 6 | Planned |
