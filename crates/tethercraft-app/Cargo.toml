@@ -17,6 +17,7 @@ hex = { workspace = true }
 thiserror = { workspace = true }
 tethercraft-core = { path = "../tethercraft-core" }
 tethercraft-net = { path = "../tethercraft-net" }
+tethercraft-proto = { path = "../tethercraft-proto" }
 tethercraft-store = { path = "../tethercraft-store" }
 tethercraft-host = { path = "../tethercraft-host" }
 

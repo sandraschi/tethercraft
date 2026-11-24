@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0 - 2026-11-24
+
+- Tier 2 domain logic: Tier 2 wire kinds, host file manager (root-jailed),
+  terminal registry, host-side agent sessions (view-only default, rate limit,
+  kill switch), R4 scam shield engine, folder sync planner with local apply,
+  sealed deploy configs (Argon2id plus XChaCha20-Poly1305, ed25519-signed),
+  R3 promotion tokens and cooling, R5 risk scorer, R6 evidence bundle and peer
+  blocklist, chat log and notes, CLI files/sync/broadcast/collect/batch/
+  restart/shutdown/lock/exec/tunnel verbs, MCP confirm-gated write tools.
+- 64 tests green; clippy and fmt clean. Live host service run still pending.
+
 ## 0.1.0 - 2026-11-24
 
 - Tier 0 scaffold: 11-crate workspace, deny lints, CI, threat model doc, native proto schema.

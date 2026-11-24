@@ -4,13 +4,17 @@ Pure-Rust remote desktop with RustDesk 1.5.1 feature parity as the goal, plus a
 complete CLI and an MCP server on one command bus. Session B build, Tier 0 + Tier 1,
 native protocol only, Windows only. Clean room: no RustDesk source is opened.
 
-> Scope this week: Tier 0 scaffold (C0) and Tier 1 Windows-to-Windows over LAN and
-> Tailscale (C1), including scam resistance R1, R2, R7. No relay server, no RustDesk
-> compat, no Linux or macOS.
+> Scope this week: Tier 0 scaffold (C0), Tier 1 Windows-to-Windows over LAN and
+> Tailscale (C1) including scam resistance R1, R2, R7, then Tier 2 (C2):
+> host-side file/chat/terminal/tunnel management, folder sync planner, agent
+> sessions, and scam resistance R3-R6. No relay server, no RustDesk compat,
+> no Linux or macOS.
 
 ## Status
 
-Tier 0 done, Tier 1 in progress. See `HANDOVER.md` for the live state.
+Tier 0 done, Tier 1 domain logic done (live two-machine run still pending),
+Tier 2 domain logic done (live host service run still pending). See `HANDOVER.md`
+for the live state.
 
 ## Layout
 
@@ -26,7 +30,7 @@ Tier 0 done, Tier 1 in progress. See `HANDOVER.md` for the live state.
 | `tethercraft-server` | Self-hosted rendezvous and relay placeholder (Tier 3, not implemented) |
 | `tethercraft-store` | SQLite address book, settings, audit log |
 | `tethercraft-mcp` | stdio MCP server, read tools |
-| `tethercraft-app` | CLI (`status`, `id`, `peers`, `peer-info`, `connect`, `screenshot`, `book`, `audit`, `wake`) with `--json`, plus egui controller placeholder |
+| `tethercraft-app` | CLI (`status`, `id`, `peers`, `peer-info`, `connect`, `screenshot`, `book`, `audit`, `wake`, `files`, `sync`, `broadcast-file`, `collect-files`, `batch`, `restart`, `shutdown`, `lock`, `exec`, `tunnel`) with `--json`, plus egui controller placeholder |
 
 ## Feature matrix (PRD section 6 rows)
 
@@ -47,17 +51,17 @@ Tier 0 done, Tier 1 in progress. See `HANDOVER.md` for the live state.
 | Video | virtual display for headless Windows, headless Linux | 4 | Planned |
 | Video | privacy mode incl. multi-monitor; macOS privacy mode | 4 | Planned |
 | Data | clipboard text and images | 1 | Partial |
-| Data | clipboard files (copy on one side, paste on the other) | 2 | Planned |
-| Data | file transfer manager: browse, upload, download, resume, folders | 2 | Planned |
-| Data | audio from remote | 2 | Planned |
-| Data | text chat, session notes | 2 | Planned |
+| Data | clipboard files (copy on one side, paste on the other) | 2 | Partial |
+| Data | file transfer manager: browse, upload, download, resume, folders | 2 | Partial |
+| Data | audio from remote | 2 | Partial |
+| Data | text chat, session notes | 2 | Partial |
 | Data | voice call | 4 | Planned |
 | Data | camera view of remote host | 4 | Planned |
 | Data | remote printer (Windows to Windows first) | 4 | Planned |
-| Data | TCP tunnel (port forwarding), RDP over tunnel | 2 | Planned |
-| Data | terminal with PTY, persistent sessions, reconnection buffer | 2 | Planned |
+| Data | TCP tunnel (port forwarding), RDP over tunnel | 2 | Partial |
+| Data | terminal with PTY, persistent sessions, reconnection buffer | 2 | Partial |
 | Access | one-time password (alphanumeric / numeric), permanent password, approve by click, both | 1 | Partial |
-| Access | 2FA (TOTP), trusted devices | 2 | Planned |
+| Access | 2FA (TOTP), trusted devices | 2 | Partial |
 | Access | per-connection and per-user permissions (keyboard, clipboard, file, audio, camera, terminal, printer, tunnel, restart, recording, privacy) | 1-2 | Partial |
 | Access | IP allowlist, LAN discovery, direct IP access | 1 | Planned |
 | Access | audit log with controller attribution | 1 | Partial |
@@ -66,7 +70,7 @@ Tier 0 done, Tier 1 in progress. See `HANDOVER.md` for the live state.
 | Net | WebSocket transport for proxies and web client; SOCKS5 and HTTP proxy | 3-4 | Planned |
 | Manage | address book with tags, aliases, favourites, recent, discovered | 1 | Partial |
 | Manage | Wake-on-LAN | 1 | Partial |
-| Manage | deployment: config string import/export, silent install, MSI, set/get ID, set password | 2 | Planned |
+| Manage | deployment: config string import/export, silent install, MSI, set/get ID, set password | 2 | Partial |
 | Manage | signed auto-update (metadata signature verified before download) | 4 | Planned |
 | Platform | Windows x64 and ARM64 (controller and host) | 1 | Partial |
 | Platform | Linux X11 and Wayland, macOS (controller and host) | 3 | Planned |
@@ -75,6 +79,10 @@ Tier 0 done, Tier 1 in progress. See `HANDOVER.md` for the live state.
 | Pro-class | web console, OIDC/LDAP, strategies, multiple relays, device groups, custom client generator | 6 | Planned |
 | Scam R1 | install-time onboarding, 24 h outgoing-only on yes | 1 | Partial |
 | Scam R2 | peer tiers enforced on host, stranger defaults, 30 min cap, local recording | 1 | Partial |
+| Scam R3 | trusted-helper promotion via in-person token or 24 h cooling from local UI | 2 | Partial |
+| Scam R4 | scam shield blurring and input-blocking banking/payment/password windows in stranger sessions | 2 | Partial |
+| Scam R5 | risk scoring with input freeze and capture-excluded interstitial | 2 | Partial |
+| Scam R6 | evidence bundle and one-click peer block | 2 | Partial |
 | Scam R7 | consumer builds always run R1, no quick-support exe | 1 | Partial |
 
 Partial means the domain model and policy enforcement exist and are tested; live
