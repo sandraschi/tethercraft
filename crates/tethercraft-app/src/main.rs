@@ -95,6 +95,17 @@ enum Cmd {
         peer: String,
         mapping: String,
     },
+    Recordings {
+        #[command(subcommand)]
+        op: RecordOp,
+    },
+    UpdateCheck {
+        metadata: String,
+        #[arg(long)]
+        current: String,
+        #[arg(long)]
+        key: String,
+    },
     Gui,
     Server {
         #[arg(long, default_value_t = 21116)]
@@ -145,6 +156,23 @@ enum FilesOp {
         peer: String,
         path: String,
     },
+}
+
+#[derive(Subcommand)]
+enum RecordOp {
+    List {
+        #[arg(long)]
+        dir: Option<String>,
+    },
+}
+
+/// Default local recordings directory next to the store.
+fn recordings_dir() -> std::path::PathBuf {
+    let store = store_path();
+    match std::path::Path::new(&store).parent() {
+        Some(d) => d.join("recordings"),
+        None => std::path::PathBuf::from("recordings"),
+    }
 }
 
 #[derive(Clone, Copy, Default, ValueEnum)]
@@ -477,6 +505,79 @@ fn run() -> Result<(), TetherError> {
             let (port, target) = parse_mapping(&mapping)?;
             live_only(&format!("tunnel {peer} {port}:{target}"))
         }
+        Cmd::Recordings { op } => match op {
+            RecordOp::List { dir } => {
+                let root = match dir {
+                    Some(d) => std::path::PathBuf::from(d),
+                    None => recordings_dir(),
+                };
+                let mut found: Vec<serde_json::Value> = Vec::new();
+                if root.is_dir() {
+                    let mut entries: Vec<_> = std::fs::read_dir(&root)
+                        .map_err(|e| TetherError::Invalid(format!("recordings unreadable: {e}")))?
+                        .filter_map(|e| e.ok())
+                        .collect();
+                    entries.sort_by_key(|e| e.file_name());
+                    for entry in entries {
+                        let path = entry.path();
+                        if path.extension().and_then(|x| x.to_str()) != Some("tetherrec") {
+                            continue;
+                        }
+                        let meta = entry
+                            .metadata()
+                            .map_err(|e| TetherError::Invalid(format!("stat: {e}")))?;
+                        found.push(serde_json::json!({
+                            "file": path.file_name(),
+                            "bytes": meta.len(),
+                        }));
+                    }
+                }
+                print_out(
+                    cli.json,
+                    format!("{} recordings", found.len()),
+                    json!({"recordings": found}),
+                );
+                Ok(())
+            }
+        },
+        Cmd::UpdateCheck {
+            metadata,
+            current,
+            key,
+        } => {
+            let text = std::fs::read_to_string(&metadata)
+                .map_err(|e| TetherError::Invalid(format!("metadata unreadable: {e}")))?;
+            let signed: tethercraft_net::update::SignedUpdate = serde_json::from_str(&text)
+                .map_err(|e| TetherError::Invalid(format!("metadata not JSON: {e}")))?;
+            let key_bytes = hex::decode(key.trim())
+                .map_err(|_| TetherError::Invalid("operator key must be hex".to_string()))?;
+            if key_bytes.len() != 32 {
+                return Err(TetherError::Invalid(
+                    "operator key must be 32 bytes".to_string(),
+                ));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&key_bytes);
+            let vk = tethercraft_net::parse_public_key(&arr)?;
+            match tethercraft_net::update::verify_update(&signed, &current, &vk)? {
+                tethercraft_net::update::UpdateDecision::UpToDate => {
+                    print_out(
+                        cli.json,
+                        "up to date".to_string(),
+                        json!({"update": "none"}),
+                    );
+                    Ok(())
+                }
+                tethercraft_net::update::UpdateDecision::Available { version, url } => {
+                    print_out(
+                        cli.json,
+                        format!("update available: {version}"),
+                        json!({"update": version, "url": url}),
+                    );
+                    Ok(())
+                }
+            }
+        }
         Cmd::Gui => {
             let s = open_store()?;
             let peers = s.list_peers().unwrap_or_default();
@@ -577,6 +678,17 @@ mod tests {
         assert!(Cli::try_parse_from(["tethercraft", "sync", "p", ".", "/r"]).is_ok());
         assert!(Cli::try_parse_from(["tethercraft", "exec", "p", "--", "whoami"]).is_ok());
         assert!(Cli::try_parse_from(["tethercraft", "tunnel", "p", "8080:x"]).is_ok());
+        assert!(Cli::try_parse_from(["tethercraft", "recordings", "list"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "tethercraft",
+            "update-check",
+            "m.json",
+            "--current",
+            "0.3.0",
+            "--key",
+            "ab"
+        ])
+        .is_ok());
         assert!(Cli::try_parse_from(["tethercraft", "gui"]).is_ok());
         assert!(Cli::try_parse_from(["tethercraft", "server"]).is_ok());
         assert!(Cli::try_parse_from(["tethercraft", "server", "--port", "21116"]).is_ok());

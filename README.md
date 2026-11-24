@@ -40,7 +40,7 @@ outgoing-only with a banner). Frames are synthetic until the live run.
 | `tethercraft-server` | Self-hosted rendezvous and relay placeholder (Tier 3, not implemented) |
 | `tethercraft-store` | SQLite address book, settings, audit log |
 | `tethercraft-mcp` | stdio MCP server, read tools |
-| `tethercraft-app` | CLI (`status`, `id`, `peers`, `peer-info`, `connect`, `screenshot`, `book`, `audit`, `wake`, `files`, `sync`, `broadcast-file`, `collect-files`, `batch`, `restart`, `shutdown`, `lock`, `exec`, `tunnel`, `gui`, `server`) with `--json`, plus the egui controller window |
+| `tethercraft-app` | CLI (`status`, `id`, `peers`, `peer-info`, `connect`, `screenshot`, `book`, `audit`, `wake`, `files`, `sync`, `broadcast-file`, `collect-files`, `batch`, `restart`, `shutdown`, `lock`, `exec`, `tunnel`, `recordings`, `update-check`, `gui`, `server`) with `--json`, plus the egui controller window |
 
 ## Feature matrix (PRD section 6 rows)
 
@@ -56,18 +56,18 @@ outgoing-only with a banner). Frames are synthetic until the live run.
 | Session | connect to a specific Windows session; terminal-server sessions | 3 | Planned |
 | Session | tabs or separate windows | 1 | Planned |
 | Session | screenshot | 1 | Partial |
-| Session | recording (local and host-side storage, visible to host) | 4 | Planned |
+| Session | recording (local and host-side storage, visible to host) | 4 | Partial |
 | Video | software codecs VP9 and AV1, hardware H.264/H.265, zero-copy GPU path, 4:4:4 | 1 (one codec), 3 (all) | Partial |
-| Video | virtual display for headless Windows, headless Linux | 4 | Planned |
-| Video | privacy mode incl. multi-monitor; macOS privacy mode | 4 | Planned |
+| Video | virtual display for headless Windows, headless Linux | 4 | Partial |
+| Video | privacy mode incl. multi-monitor; macOS privacy mode | 4 | Partial |
 | Data | clipboard text and images | 1 | Partial |
 | Data | clipboard files (copy on one side, paste on the other) | 2 | Partial |
 | Data | file transfer manager: browse, upload, download, resume, folders | 2 | Partial |
 | Data | audio from remote | 2 | Partial |
 | Data | text chat, session notes | 2 | Partial |
-| Data | voice call | 4 | Planned |
-| Data | camera view of remote host | 4 | Planned |
-| Data | remote printer (Windows to Windows first) | 4 | Planned |
+| Data | voice call | 4 | Partial |
+| Data | camera view of remote host | 4 | Partial |
+| Data | remote printer (Windows to Windows first) | 4 | Partial |
 | Data | TCP tunnel (port forwarding), RDP over tunnel | 2 | Partial |
 | Data | terminal with PTY, persistent sessions, reconnection buffer | 2 | Partial |
 | Access | one-time password (alphanumeric / numeric), permanent password, approve by click, both | 1 | Partial |
@@ -81,7 +81,7 @@ outgoing-only with a banner). Frames are synthetic until the live run.
 | Manage | address book with tags, aliases, favourites, recent, discovered | 1 | Partial |
 | Manage | Wake-on-LAN | 1 | Partial |
 | Manage | deployment: config string import/export, silent install, MSI, set/get ID, set password | 2 | Partial |
-| Manage | signed auto-update (metadata signature verified before download) | 4 | Planned |
+| Manage | signed auto-update (metadata signature verified before download) | 4 | Partial |
 | Platform | Windows x64 and ARM64 (controller and host) | 1 | Partial |
 | Platform | Linux X11 and Wayland, macOS (controller and host) | 3 | Planned |
 | Platform | web client (controller only) | 4 | Planned |

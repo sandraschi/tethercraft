@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 - 2026-11-24
+
+- Tier 4 started: `.tetherrec` session recorder with validated playback,
+  privacy mode state machine plus RGBA blanking, monitor pick and virtual
+  display request types, camera session state with frame validation, voice
+  call state machine with PCM bounds, print spool queue, signed update check
+  (signature first, then shape, then no-downgrade), `recordings list` and
+  `update-check` CLI verbs, PrivacyRequest/PrivacyEnd wire kinds.
+- 87 tests green; clippy and fmt clean. OS backends (camera device, spooler,
+  virtual display driver, audio duplex, update download) still pending.
+
 ## 0.3.0 - 2026-11-24
 
 - Tier 3 started: rendezvous + relay server over loopback TCP (register,
