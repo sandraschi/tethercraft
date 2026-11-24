@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0 - 2026-11-24
+
+- Tier 3 started: rendezvous + relay server over loopback TCP (register,
+  heartbeat, lookup, relay mailbox routing of opaque frames), NAT candidate
+  ordering, `tethercraft server` verb, and the egui controller window
+  (`tethercraft gui`: peer sidebar, session view, End session, Ctrl+wheel
+  zoom, audit tail, R1 gate with 20-second wait and persisted answer).
+- 73 tests green; clippy and fmt clean. Live WAN run and Linux/macOS still
+  pending (no such machines this week).
+
 ## 0.2.0 - 2026-11-24
 
 - Tier 2 domain logic: Tier 2 wire kinds, host file manager (root-jailed),

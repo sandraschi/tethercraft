@@ -14,12 +14,16 @@ serde_json = { workspace = true }
 clap = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
+eframe = { workspace = true }
 thiserror = { workspace = true }
+tethercraft-capture = { path = "../tethercraft-capture" }
+tethercraft-codec = { path = "../tethercraft-codec" }
 tethercraft-core = { path = "../tethercraft-core" }
 tethercraft-net = { path = "../tethercraft-net" }
 tethercraft-proto = { path = "../tethercraft-proto" }
 tethercraft-store = { path = "../tethercraft-store" }
 tethercraft-host = { path = "../tethercraft-host" }
+tethercraft-server = { path = "../tethercraft-server" }
 
 [lints]
 workspace = true

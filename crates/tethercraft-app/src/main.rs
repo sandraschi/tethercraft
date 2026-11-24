@@ -6,6 +6,8 @@ use serde_json::json;
 use tethercraft_core::TetherError;
 use tethercraft_net::{fingerprint_hex, fingerprint_words, generate_device_key, public_key_bytes};
 
+mod ui;
+
 #[derive(Parser)]
 #[command(name = "tethercraft", version)]
 struct Cli {
@@ -92,6 +94,11 @@ enum Cmd {
     Tunnel {
         peer: String,
         mapping: String,
+    },
+    Gui,
+    Server {
+        #[arg(long, default_value_t = 21116)]
+        port: u16,
     },
 }
 
@@ -470,6 +477,58 @@ fn run() -> Result<(), TetherError> {
             let (port, target) = parse_mapping(&mapping)?;
             live_only(&format!("tunnel {peer} {port}:{target}"))
         }
+        Cmd::Gui => {
+            let s = open_store()?;
+            let peers = s.list_peers().unwrap_or_default();
+            let list: Vec<(String, String)> = peers
+                .into_iter()
+                .map(|r| (r.peer_id, r.alias.unwrap_or_default()))
+                .collect();
+            let (outgoing, needs_answer, marker) = read_onboarding();
+            let app = ui::ControllerUi::new(list, outgoing, needs_answer, marker);
+            eframe::run_native(
+                "TetherCraft",
+                eframe::NativeOptions::default(),
+                Box::new(|_cc| Ok(Box::new(app) as Box<dyn eframe::App>)),
+            )
+            .map_err(|e| TetherError::Invalid(format!("gui failed: {e}")))?;
+            Ok(())
+        }
+        Cmd::Server { port } => {
+            let listener = std::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+                .map_err(|e| TetherError::Invalid(format!("bind: {e}")))?;
+            print_out(
+                cli.json,
+                format!("rendezvous+relay on 0.0.0.0:{port}"),
+                json!({"port": port}),
+            );
+            tethercraft_server::serve(
+                listener,
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+        }
+    }
+}
+
+fn onboarding_marker_path() -> std::path::PathBuf {
+    let store = store_path();
+    let dir = std::path::Path::new(&store);
+    match dir.parent() {
+        Some(d) => d.join("onboarding.txt"),
+        None => std::path::PathBuf::from("onboarding.txt"),
+    }
+}
+
+/// Read the persisted R1 answer. Returns (outgoing_only, needs_answer, marker_path).
+fn read_onboarding() -> (bool, bool, Option<std::path::PathBuf>) {
+    let path = onboarding_marker_path();
+    let now = chrono::Utc::now();
+    match std::fs::read_to_string(&path) {
+        Ok(text) => match ui::parse_marker(&text) {
+            Some(m) if m.answered => (m.active(now), false, Some(path)),
+            _ => (false, true, Some(path)),
+        },
+        Err(_) => (false, true, Some(path)),
     }
 }
 
@@ -518,5 +577,8 @@ mod tests {
         assert!(Cli::try_parse_from(["tethercraft", "sync", "p", ".", "/r"]).is_ok());
         assert!(Cli::try_parse_from(["tethercraft", "exec", "p", "--", "whoami"]).is_ok());
         assert!(Cli::try_parse_from(["tethercraft", "tunnel", "p", "8080:x"]).is_ok());
+        assert!(Cli::try_parse_from(["tethercraft", "gui"]).is_ok());
+        assert!(Cli::try_parse_from(["tethercraft", "server"]).is_ok());
+        assert!(Cli::try_parse_from(["tethercraft", "server", "--port", "21116"]).is_ok());
     }
 }

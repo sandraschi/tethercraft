@@ -7,14 +7,24 @@ native protocol only, Windows only. Clean room: no RustDesk source is opened.
 > Scope this week: Tier 0 scaffold (C0), Tier 1 Windows-to-Windows over LAN and
 > Tailscale (C1) including scam resistance R1, R2, R7, then Tier 2 (C2):
 > host-side file/chat/terminal/tunnel management, folder sync planner, agent
-> sessions, and scam resistance R3-R6. No relay server, no RustDesk compat,
-> no Linux or macOS.
+> sessions, and scam resistance R3-R6. Tier 3 started: loopback rendezvous +
+> relay server and the egui controller window. No RustDesk compat, no Linux
+> or macOS.
 
 ## Status
 
-Tier 0 done, Tier 1 domain logic done (live two-machine run still pending),
-Tier 2 domain logic done (live host service run still pending). See `HANDOVER.md`
-for the live state.
+Tier 0 done, Tier 1 and Tier 2 domain logic done (live two-machine run still
+pending). Tier 3 started: rendezvous + relay work over loopback TCP and the
+egui controller window with synthetic frames. See `HANDOVER.md` for the live
+state.
+
+## Controller UI
+
+`tethercraft gui` opens the L3 egui window: peer sidebar from the address
+book, session view, always-visible End session button while connected, Ctrl +
+wheel zoom, audit tail, and the R1 install gate (20-second wait, answer stored
+in `onboarding.txt` next to the store; yes/not-sure enables 24 h
+outgoing-only with a banner). Frames are synthetic until the live run.
 
 ## Layout
 
@@ -30,7 +40,7 @@ for the live state.
 | `tethercraft-server` | Self-hosted rendezvous and relay placeholder (Tier 3, not implemented) |
 | `tethercraft-store` | SQLite address book, settings, audit log |
 | `tethercraft-mcp` | stdio MCP server, read tools |
-| `tethercraft-app` | CLI (`status`, `id`, `peers`, `peer-info`, `connect`, `screenshot`, `book`, `audit`, `wake`, `files`, `sync`, `broadcast-file`, `collect-files`, `batch`, `restart`, `shutdown`, `lock`, `exec`, `tunnel`) with `--json`, plus egui controller placeholder |
+| `tethercraft-app` | CLI (`status`, `id`, `peers`, `peer-info`, `connect`, `screenshot`, `book`, `audit`, `wake`, `files`, `sync`, `broadcast-file`, `collect-files`, `batch`, `restart`, `shutdown`, `lock`, `exec`, `tunnel`, `gui`, `server`) with `--json`, plus the egui controller window |
 
 ## Feature matrix (PRD section 6 rows)
 
@@ -66,7 +76,7 @@ for the live state.
 | Access | IP allowlist, LAN discovery, direct IP access | 1 | Planned |
 | Access | audit log with controller attribution | 1 | Partial |
 | Net | direct LAN and Tailscale/WireGuard addresses | 1 | Partial |
-| Net | rendezvous + relay server (self-hosted, one binary), UDP/TCP hole punching, IPv6, relay fallback, force relay | 3 | Planned |
+| Net | rendezvous + relay server (self-hosted, one binary), UDP/TCP hole punching, IPv6, relay fallback, force relay | 3 | Partial |
 | Net | WebSocket transport for proxies and web client; SOCKS5 and HTTP proxy | 3-4 | Planned |
 | Manage | address book with tags, aliases, favourites, recent, discovered | 1 | Partial |
 | Manage | Wake-on-LAN | 1 | Partial |
