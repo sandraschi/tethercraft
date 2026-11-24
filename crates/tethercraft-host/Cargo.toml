@@ -1,0 +1,15 @@
+[package]
+name = "tethercraft-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tethercraft-core = { path = "../tethercraft-core" }
+tethercraft-proto = { path = "../tethercraft-proto" }
+
+[lints]
+workspace = true
