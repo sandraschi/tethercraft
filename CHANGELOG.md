@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0 - 2026-11-25
+
+- H.264 software codec over the wire: `tethercraft-codec::h264` on Cisco's
+  OpenH264 prebuilt (BSD crate, royalty-covered binary, no self-build),
+  `FrameH264` envelope kind, `--codec raw|h264` (default h264) with per-frame
+  fallback accounting, decode on both live paths (GUI and headless).
+- Measured loopback, real 1080p WGC: 145,503 bytes for 10 frames vs 82,944,080
+  raw (570x). Decoded output verified as real pixels, not flat.
+- 103 tests green; clippy and fmt clean.
+
 ## 0.7.0 - 2026-11-25
 
 - Cross-OS session verified: static Linux controller (`tethercraft-probe`,

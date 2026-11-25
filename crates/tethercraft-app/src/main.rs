@@ -127,6 +127,10 @@ enum Cmd {
         fps: u8,
         #[arg(long, default_value_t = false)]
         fake_frames: bool,
+        #[arg(long, default_value_t = "h264".to_string())]
+        codec: String,
+        #[arg(long)]
+        pin_key: Option<String>,
     },
     Serve {
         peer: String,
@@ -155,6 +159,12 @@ enum BookOp {
         addr: Option<String>,
     },
     Rm {
+        peer: String,
+    },
+    Promote {
+        peer: String,
+    },
+    Demote {
         peer: String,
     },
 }
@@ -472,6 +482,26 @@ fn run() -> Result<(), TetherError> {
             BookOp::Rm { peer } => Err(TetherError::NotImplemented(format!(
                 "remove {peer} ships with Tier 2 store verbs"
             ))),
+            BookOp::Promote { peer } => {
+                let s = open_store()?;
+                s.set_tier(&peer, "trusted_helper")?;
+                print_out(
+                    cli.json,
+                    format!("{peer} is now a trusted helper"),
+                    json!({"promoted": peer}),
+                );
+                Ok(())
+            }
+            BookOp::Demote { peer } => {
+                let s = open_store()?;
+                s.set_tier(&peer, "stranger")?;
+                print_out(
+                    cli.json,
+                    format!("{peer} is a stranger again"),
+                    json!({"demoted": peer}),
+                );
+                Ok(())
+            }
         },
         Cmd::Audit { peer } => {
             let s = open_store()?;
@@ -750,9 +780,24 @@ fn run() -> Result<(), TetherError> {
             grants,
             fps,
             fake_frames,
+            codec,
+            pin_key,
         } => {
             if fps == 0 || fps > 60 {
                 return Err(TetherError::Invalid("fps must be 1..=60".to_string()));
+            }
+            if codec != "raw" && codec != "h264" {
+                return Err(TetherError::Invalid(
+                    "codec must be raw or h264".to_string(),
+                ));
+            }
+            if let Some(pin) = &pin_key {
+                let clean = pin.trim();
+                if clean.len() != 64 || !clean.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err(TetherError::Invalid(
+                        "pin key must be 64 hex chars".to_string(),
+                    ));
+                }
             }
             let password = load_password(password_file.as_deref())?;
             if password.is_empty() {
@@ -773,11 +818,13 @@ fn run() -> Result<(), TetherError> {
                 fake_frames,
                 outgoing_only: false,
                 stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                codec: codec.clone(),
+                pin_key: pin_key.clone(),
             };
             print_out(
                 cli.json,
                 format!(
-                    "hosting on 0.0.0.0:{port}\nid {id}\nwords: {words}\ngrants: {g:?}\nframes: {f}",
+                    "hosting on 0.0.0.0:{port}\nid {id}\nwords: {words}\ngrants: {g:?}\nframes: {f}\ncodec: {codec}",
                     g = grant_names(&grant_list),
                     f = if fake_frames { "synthetic" } else { "live (WGC)" }
                 ),
@@ -787,6 +834,7 @@ fn run() -> Result<(), TetherError> {
                     "words": words,
                     "grants": grant_names(&grant_list),
                     "fake_frames": fake_frames,
+                    "codec": codec,
                 }),
             );
             loop {
@@ -795,18 +843,23 @@ fn run() -> Result<(), TetherError> {
                         print_out(
                             cli.json,
                             format!(
-                                "session with {p}: frames {f}, inputs {i}, denied {d}, ended {e}",
+                                "session with {p}: frames {f} ({b} bytes), inputs {i}, denied {d}, fallbacks {fb}, ended {e}",
                                 p = report.peer_id,
                                 f = report.frames_sent,
+                                b = report.bytes_sent,
                                 i = report.inputs_applied,
                                 d = report.denied_inputs,
+                                fb = report.codec_fallbacks,
                                 e = report.ended
                             ),
                             json!({
                                 "peer": report.peer_id,
                                 "frames": report.frames_sent,
+                                "bytes": report.bytes_sent,
                                 "inputs": report.inputs_applied,
                                 "denied": report.denied_inputs,
+                                "fallbacks": report.codec_fallbacks,
+                                "codec": report.codec,
                                 "ended": report.ended,
                             }),
                         );

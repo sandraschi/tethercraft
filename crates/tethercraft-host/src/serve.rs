@@ -30,14 +30,19 @@ pub struct ServeConfig {
     pub fake_frames: bool,
     pub outgoing_only: bool,
     pub stop: Arc<AtomicBool>,
+    pub codec: String,
+    pub pin_key: Option<String>,
 }
 
 #[derive(Debug)]
 pub struct SessionReport {
     pub peer_id: String,
     pub frames_sent: u64,
+    pub bytes_sent: u64,
     pub inputs_applied: u64,
     pub denied_inputs: u64,
+    pub codec_fallbacks: u64,
+    pub codec: String,
     pub ended: String,
 }
 
@@ -64,13 +69,21 @@ fn spawn_reader(stream: std::net::TcpStream) -> mpsc::Receiver<Envelope> {
     rx
 }
 
-/// Pump frames in the background so a slow capture never blocks input.
-/// Sends only the latest frame per tick; drops the rest.
-fn spawn_pump(fake: bool, fps: u8, stop: Arc<AtomicBool>) -> mpsc::Receiver<(u32, u32, Vec<u8>)> {
+/// Pump frames in the background: capture, optionally H.264-encode, and hand
+/// the ready-to-send packet to the serve loop. A slow capture or encode never
+/// blocks input handling; only the latest packet is kept.
+fn spawn_pump(
+    fake: bool,
+    fps: u8,
+    stop: Arc<AtomicBool>,
+    codec: String,
+) -> mpsc::Receiver<PumpPacket> {
     let (tx, rx) = mpsc::channel();
     let per_frame = Duration::from_millis((1000 / u64::from(fps.max(1))).max(16));
     std::thread::spawn(move || {
         let mut n = 0u64;
+        let mut enc: Option<tethercraft_codec::h264::H264Encoder> = None;
+        let mut enc_dims = (0u32, 0u32);
         while !stop.load(Ordering::Relaxed) {
             let frame = if fake {
                 let (meta, px) = tethercraft_capture::fake_frame(640, 360, n);
@@ -80,8 +93,32 @@ fn spawn_pump(fake: bool, fps: u8, stop: Arc<AtomicBool>) -> mpsc::Receiver<(u32
                     .ok()
                     .map(|(meta, px)| (meta.width, meta.height, px))
             };
-            if let Some(f) = frame {
-                if tx.send(f).is_err() {
+            if let Some((w, h, rgba)) = frame {
+                let packet = if codec == "h264" {
+                    if enc_dims != (w, h) {
+                        enc = tethercraft_codec::h264::H264Encoder::new(w, h).ok();
+                        enc_dims = (w, h);
+                    }
+                    match enc.as_mut() {
+                        Some(e) => match e.encode_rgba(&rgba) {
+                            Ok(nal) => match session::encode_frame_h264(w, h, &nal) {
+                                Ok(p) => PumpPacket::packet(MessageKind::FrameH264, p, false),
+                                Err(_) => PumpPacket::dropped("h264 packet too large"),
+                            },
+                            Err(e) => PumpPacket::dropped(&format!("h264 encode: {e}")),
+                        },
+                        None => match session::encode_frame(w, h, &rgba) {
+                            Ok(p) => PumpPacket::packet(MessageKind::Frame, p, true),
+                            Err(_) => PumpPacket::dropped("raw encode failed"),
+                        },
+                    }
+                } else {
+                    match session::encode_frame(w, h, &rgba) {
+                        Ok(p) => PumpPacket::packet(MessageKind::Frame, p, false),
+                        Err(_) => PumpPacket::dropped("raw encode failed"),
+                    }
+                };
+                if tx.send(packet).is_err() {
                     break;
                 }
             }
@@ -90,6 +127,30 @@ fn spawn_pump(fake: bool, fps: u8, stop: Arc<AtomicBool>) -> mpsc::Receiver<(u32
         }
     });
     rx
+}
+
+#[derive(Debug)]
+enum PumpPacket {
+    Packet {
+        kind: MessageKind,
+        payload: Vec<u8>,
+        fallback: bool,
+    },
+    Dropped(String),
+}
+
+impl PumpPacket {
+    fn packet(kind: MessageKind, payload: Vec<u8>, fallback: bool) -> Self {
+        Self::Packet {
+            kind,
+            payload,
+            fallback,
+        }
+    }
+
+    fn dropped(reason: &str) -> Self {
+        Self::Dropped(reason.to_string())
+    }
 }
 
 pub fn serve_one(
@@ -112,8 +173,11 @@ pub fn serve_one(
         return Ok(SessionReport {
             peer_id: peer_label,
             frames_sent: 0,
+            bytes_sent: 0,
             inputs_applied: 0,
             denied_inputs: 0,
+            codec_fallbacks: 0,
+            codec: cfg.codec.clone(),
             ended: "outgoing-only".to_string(),
         });
     }
@@ -139,32 +203,72 @@ pub fn serve_one(
                 frames_sent: 0,
                 inputs_applied: 0,
                 denied_inputs: 0,
+                codec_fallbacks: 0,
+                codec: cfg.codec.clone(),
+                bytes_sent: 0,
                 ended: format!("auth-failed: {e}"),
             });
         }
     };
 
     let peer_hex = hex::encode(auth.peer_key);
+    if let Some(pin) = &cfg.pin_key {
+        if pin.to_lowercase() != peer_hex.to_lowercase() {
+            audit(store, &auth.peer_id, "session", "refused-pin-mismatch");
+            return Ok(SessionReport {
+                peer_id: auth.peer_id,
+                frames_sent: 0,
+                bytes_sent: 0,
+                inputs_applied: 0,
+                denied_inputs: 0,
+                codec_fallbacks: 0,
+                codec: cfg.codec.clone(),
+                ended: "pinned-key-mismatch".to_string(),
+            });
+        }
+    }
     if store.is_blocked(&peer_hex) {
         audit(store, &auth.peer_id, "session", "refused-blocked");
         return Ok(SessionReport {
             peer_id: auth.peer_id,
             frames_sent: 0,
+            bytes_sent: 0,
             inputs_applied: 0,
             denied_inputs: 0,
+            codec_fallbacks: 0,
+            codec: cfg.codec.clone(),
             ended: "blocked".to_string(),
         });
     }
+    // Trust on first use: record unknown keys as strangers. A known key keeps
+    // its stored tier instead of resetting to stranger.
+    let known_tier = match store.find_by_key(&peer_hex) {
+        Ok(Some(row)) => row.tier,
+        _ => {
+            let _ = store.add_peer(&auth.peer_id, None, &peer_hex, None);
+            "stranger".to_string()
+        }
+    };
 
     let mut host = Host::new();
     let _ = host.session_start(&auth.peer_id, Utc::now(), false);
+    if known_tier == "trusted_helper" {
+        host.set_tier(&auth.peer_id, tethercraft_core::PeerTier::TrustedHelper);
+    } else if known_tier == "managed" {
+        host.set_tier(&auth.peer_id, tethercraft_core::PeerTier::Managed);
+    }
     for g in &cfg.grants {
         let _ = host.granted_mut(&auth.peer_id).insert(*g);
     }
     audit(store, &auth.peer_id, "session-start", "ok");
     let mut chat = ChatLog::new();
 
-    let frames = spawn_pump(cfg.fake_frames, cfg.fps, cfg.stop.clone());
+    let frames = spawn_pump(
+        cfg.fake_frames,
+        cfg.fps,
+        cfg.stop.clone(),
+        cfg.codec.clone(),
+    );
     // Input arrives on its own thread; the main loop only writes frames.
     let input_stream = sess.clone_stream()?;
     let incoming = spawn_reader(input_stream);
@@ -172,8 +276,11 @@ pub fn serve_one(
     let mut report = SessionReport {
         peer_id: auth.peer_id.clone(),
         frames_sent: 0,
+        bytes_sent: 0,
         inputs_applied: 0,
         denied_inputs: 0,
+        codec_fallbacks: 0,
+        codec: cfg.codec.clone(),
         ended: String::new(),
     };
 
@@ -186,30 +293,32 @@ pub fn serve_one(
             report.ended = "session-cap".to_string();
             break;
         }
-        // Latest frame wins; backlog is dropped.
-        let mut latest: Option<(u32, u32, Vec<u8>)> = None;
-        for f in frames.try_iter() {
-            latest = Some(f);
+        // Latest packet wins; backlog is dropped.
+        let mut latest: Option<PumpPacket> = None;
+        for p in frames.try_iter() {
+            latest = Some(p);
         }
-        if let Some((w, h, rgba)) = latest {
-            match session::encode_frame(w, h, &rgba) {
-                Ok(payload) => {
-                    let env = Envelope::new(MessageKind::Frame, my_pub, payload);
-                    if sess.send_envelope(&env).is_err() {
-                        report.ended = "frame-send-failed".to_string();
-                        break;
-                    }
-                    report.frames_sent = report.frames_sent.saturating_add(1);
+        match latest {
+            Some(PumpPacket::Packet {
+                kind,
+                payload,
+                fallback,
+            }) => {
+                report.bytes_sent = report.bytes_sent.saturating_add(payload.len() as u64);
+                let env = Envelope::new(kind, my_pub, payload);
+                if sess.send_envelope(&env).is_err() {
+                    report.ended = "frame-send-failed".to_string();
+                    break;
                 }
-                Err(e) => {
-                    audit(
-                        store,
-                        &auth.peer_id,
-                        "frame",
-                        &format!("encode-failed: {e}"),
-                    );
+                report.frames_sent = report.frames_sent.saturating_add(1);
+                if fallback {
+                    report.codec_fallbacks = report.codec_fallbacks.saturating_add(1);
                 }
             }
+            Some(PumpPacket::Dropped(reason)) => {
+                audit(store, &auth.peer_id, "frame", &format!("dropped: {reason}"));
+            }
+            None => {}
         }
         match incoming.recv_timeout(tick) {
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -297,6 +406,7 @@ pub fn ephemeral_identity() -> Result<(SigningKey, String, String), TetherError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{TcpListener, TcpStream};
 
     #[test]
     fn ephemeral_identity_printable() {
@@ -306,5 +416,82 @@ mod tests {
             (k, hex::encode(p), String::new())
         });
         assert!(!id.1.is_empty());
+    }
+
+    /// Full loopback session against a real host: handshake, H.264 frames,
+    /// session end. Proves the serve path, not just the pieces.
+    #[test]
+    fn serve_one_h264_fake_session() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|_| std::process::exit(111));
+        let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+        if port == 0 {
+            return;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let cfg = ServeConfig {
+            port,
+            password: b"pw".to_vec(),
+            grants: vec![Permission::Keyboard],
+            fps: 10,
+            fake_frames: true,
+            outgoing_only: false,
+            stop: stop.clone(),
+            codec: "h264".to_string(),
+            pin_key: None,
+        };
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let store = match tethercraft_store::Store::open_in_memory() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let handle = std::thread::spawn(move || serve_one(&listener, &cfg, &signing, &store));
+        let result: Result<(u32, u32), String> = (|| {
+            let stream =
+                TcpStream::connect(format!("127.0.0.1:{port}")).map_err(|e| e.to_string())?;
+            let mut sess = SessionStream::new(stream).map_err(|e| e.to_string())?;
+            let ck = SigningKey::from_bytes(&[8u8; 32]);
+            let auth = session::controller_handshake(&mut sess, "test-ctrl", &ck, b"pw")
+                .map_err(|e| e.to_string())?;
+            if auth.host_id.is_empty() {
+                return Err("empty host id".to_string());
+            }
+            sess.set_frame_timeouts().map_err(|e| e.to_string())?;
+            let mut dec = session::StreamDecoder::new().map_err(|e| e.to_string())?;
+            let mut frames = 0u32;
+            let mut dims = (0u32, 0u32);
+            while frames < 3 {
+                let env = sess.recv_envelope().map_err(|e| e.to_string())?;
+                if env.kind == MessageKind::FrameH264 {
+                    if let Some((w, h, _)) = dec
+                        .decode(env.kind, &env.payload)
+                        .map_err(|e| e.to_string())?
+                    {
+                        dims = (w, h);
+                        frames = frames.saturating_add(1);
+                    }
+                } else if env.kind == MessageKind::SessionEnd {
+                    break;
+                }
+            }
+            let _ = sess.send_envelope(&Envelope::new(
+                MessageKind::SessionEnd,
+                [0u8; 32],
+                Vec::new(),
+            ));
+            Ok(dims)
+        })();
+        stop.store(true, Ordering::Relaxed);
+        let report = handle
+            .join()
+            .unwrap_or(Err(TetherError::Invalid("join".to_string())));
+        assert!(report.is_ok());
+        if let Ok(r) = report {
+            assert!(r.frames_sent >= 3);
+            assert!(r.codec == "h264");
+        }
+        assert!(result.is_ok());
+        if let Ok((w, h)) = result {
+            assert!(w == 640 && h == 360);
+        }
     }
 }

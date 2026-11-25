@@ -82,10 +82,14 @@ pub fn connect_live(
     let words = auth.host_words.join(" ");
 
     std::thread::spawn(move || {
+        let mut decoder = match session::StreamDecoder::new() {
+            Ok(d) => d,
+            Err(_) => return,
+        };
         while let Ok(env) = sess.recv_envelope() {
             match env.kind {
-                MessageKind::Frame => {
-                    if let Ok((w, h, rgba)) = session::decode_frame(&env.payload) {
+                MessageKind::Frame | MessageKind::FrameH264 => {
+                    if let Ok(Some((w, h, rgba))) = decoder.decode(env.kind, &env.payload) {
                         if frame_tx.send((w, h, rgba)).is_err() {
                             break;
                         }

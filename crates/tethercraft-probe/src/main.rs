@@ -128,6 +128,12 @@ fn run() -> Result<(), TetherError> {
                     }
                 }
             }
+            MessageKind::FrameH264 => {
+                return Err(TetherError::Invalid(
+                    "host streams H.264; this probe is raw-only, restart the host with --codec raw"
+                        .to_string(),
+                ));
+            }
             MessageKind::SessionEnd => break,
             _ => {}
         }

@@ -43,6 +43,7 @@ fn permission_for_kind(kind: MessageKind) -> Option<Permission> {
         MessageKind::AudioFrame => Some(Permission::Audio),
         MessageKind::PrivacyRequest | MessageKind::PrivacyEnd => Some(Permission::Privacy),
         MessageKind::Frame
+        | MessageKind::FrameH264
         | MessageKind::ChatMsg
         | MessageKind::NoteSet
         | MessageKind::SessionStart
@@ -83,6 +84,15 @@ impl Host {
         self.policies
             .entry(peer_id.to_string())
             .or_insert_with(|| PeerPolicy::stranger(peer_id))
+    }
+
+    /// Move a peer to a stored tier (TOFU record lookup). Grants stay
+    /// session-scoped and are never escalated by this.
+    pub fn set_tier(&mut self, peer_id: &str, tier: PeerTier) {
+        self.policies
+            .entry(peer_id.to_string())
+            .or_insert_with(|| PeerPolicy::stranger(peer_id))
+            .tier = tier;
     }
 
     /// Start a session. Unknown peers become Stranger; R1 outgoing-only blocks hosting.
