@@ -1,69 +1,56 @@
 ---
-updated: 2026-11-24T22:30:00+01:00
+updated: 2026-11-25T00:10:00+01:00
 agent: opencode-musespark
 status: in-progress
-tags: [tethercraft, rust, remote-desktop, live-session]
+tags: [tethercraft, rust, remote-desktop, live-session, cross-os]
 ---
 
 ## What's happening right now
 
-Real sessions work on a single machine. `tethercraft host` serves, `tethercraft
-connect` dials, the SPAKE2 handshake completes, WGC frames arrive, and input is
-injected only when the host granted the permission. 98 tests pass; clippy and
-fmt are clean. What is still missing before a two-machine demo is the network
-run and a codec.
+Sessions work across two operating systems: a static Linux controller
+(`tethercraft-probe`) in the Ubuntu VirtualBox guest drove the Windows host
+through NAT, with real WGC capture and input applied. 98 tests pass, clippy and
+fmt are clean. The Windows guest route is blocked by guest-control permissions,
+not by the app.
 
 ## Last concrete action
 
-Built the live milestone end to end and verified it on Goliath:
+Added `crates/tethercraft-probe` (no GUI, capture, store or codec deps),
+cross-compiled it to `x86_64-unknown-linux-musl`, copied it into `ubu-2404-lts`
+with guestcontrol, and ran three checks against `tethercraft host` on Goliath:
+synthetic frames, real 1920x1080 WGC capture, wrong password. Measured numbers
+are in `docs/BENCH.md`; the recipe is `docs/VMTEST.md`. Tried the Windows guest
+first: guest control refuses the `user` account ("restricted") after the first
+successful command, so it was restored to baseline and left powered off.
 
-- `net::session`: TCP transport, length-prefixed envelopes, `HostHandshake`
-  params struct, SPAKE2 with key confirmation, fingerprint words both ways,
-  frame codec (RGBA), PPM writer, headless controller.
-- `capture::wgc`: real Windows Graphics Capture, primary monitor, BGRA to RGBA,
-  one-shot with timeout. Verified: 1920x1080 frame, 6220817 byte PPM.
-- `host::inject`: enigo injection for pointer, click, scroll, keys, touch.
-- `host::serve`: accept, handshake, refuse blocked peers, pump latest frame,
-  enforce the permission per message, audit everything, session cap.
-- CLI `host`, `serve`, live `connect` (GUI or headless), `book add --addr`.
-- Real measurements in `docs/BENCH.md`: 60 synthetic 640x360 frames in 2848 ms
-  (21.1 fps) loopback; input applied when granted, denied and audited when not;
-  wrong password rejected and rate limited.
-
-Bugs found and fixed by running it, not by reading it:
-
-1. A read timeout mid-message consumed part of a length prefix, desyncing the
-   stream; the next parse saw garbage lengths. Reads now block on a dedicated
-   thread and the timeout helper is documented as unsafe for sessions.
-2. Accepted sockets inherited the listener's non-blocking mode on Windows
-   (found earlier with the relay), which is why the reader is explicit now.
-3. An external prober on this machine sends `FOO / HTTP/1.1` to every new
-   listening port. The host rejects it cleanly and audits it. Reproduced against
-   a bare PowerShell listener, so it is not our traffic and not a bug.
+Housekeeping: `D:` reached zero free space during the musl build. Deleted
+`target/debug` and the musl target directory (3.7 GB); the release binary was
+kept. D: has little headroom, so run builds knowing that.
 
 ## Next step
 
-VirtualBox guest via vmcraft: same binary, `--addr` pointing at the guest, run
-the three checks (fake frames, real frames, input grant and denial) and record
-the latency in `docs/BENCH.md`. Then the codec, which is the only thing that
-makes frame rate meaningful.
+Wire a codec. The measurements say the bottleneck is raw RGBA (8.3 MB per
+1080p frame): VP9 via libvpx or hardware H.264 through Windows Media Foundation,
+behind the existing `tethercraft-codec` interface, with the frame path re-tested
+on the same Linux probe.
 
 ## Blockers
 
-None for the VM run. Second physical PC still needed for Tailscale and the
-two-network hole-punch numbers.
+- Windows VM test needs one interactive login in `win11-automated` before guest
+  control will accept the account.
+- Second physical PC still needed for Tailscale and real LAN/WAN latency.
+- D: is nearly full; delete build trees before large builds.
 
 ## Context the next agent needs
 
-- There is no codec yet: frames are raw RGBA. 640x360 is 921 KB per frame, so
-  21 fps on loopback is a bandwidth number, not a rendering limit.
-- The host identity is ephemeral per `host` run (`id` and `words` printed at
-  start). Peer identity is not persisted yet, so `book add` needs the current
-  run's id, or any placeholder id: the handshake trusts the password plus the
-  printed words, and verification of the pinned key is not enforced yet. That
-  is the next security gap to close before real use, and it is why this is
-  loopback-tested only.
-- Test stores: the peers added while testing were backed up to
-  `%LOCALAPPDATA%\tethercraft\store.sqlite3.testbak` and the store reset.
-- Clean room holds. O1/O2/O3 state unchanged. Max 10 files per commit, LF, no
-  em dash.
+- Trust is password plus printed fingerprint words. The pinned peer key is
+  collected but NOT enforced yet. Do not use this over an untrusted network
+  until that check exists.
+- Frames are raw RGBA in a length-prefixed envelope; `tethercraft-probe --json`
+  prints dial, handshake and frame timings for comparisons.
+- Host identity is ephemeral per `host` run (`id` and `words` printed at start).
+- VM state: `win11-automated` at `ready-1080p-2026-10-10`, powered off, no extra
+  snapshots, NAT rules removed. `ubu-2404-lts` powered off, test files deleted
+  from `/home/user`, snapshot list untouched.
+- Clean room holds. O1/O2/O3 unchanged. Max 10 files per commit, LF, no em dash.
+
