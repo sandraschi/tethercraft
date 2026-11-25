@@ -18,6 +18,7 @@ thiserror = { workspace = true }
 tethercraft-core = { path = "../tethercraft-core" }
 tethercraft-proto = { path = "../tethercraft-proto" }
 tethercraft-input = { path = "../tethercraft-input" }
+tethercraft-codec = { path = "../tethercraft-codec" }
 
 [lints]
 workspace = true

@@ -1,5 +1,6 @@
 //! Video codecs: one hardware encoder plus VP9 software fallback (interface).
 
+pub mod h264;
 pub mod rec;
 
 use serde::{Deserialize, Serialize};

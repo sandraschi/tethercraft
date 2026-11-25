@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 serde = { workspace = true }
 egui = "0.32"
+openh264 = "0.9"
 thiserror = { workspace = true }
 tethercraft-core = { path = "../tethercraft-core" }
 

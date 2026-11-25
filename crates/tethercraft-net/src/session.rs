@@ -486,17 +486,19 @@ pub fn run_headless_controller_count(
     }
     let mut got = 0u32;
     let mut saved_first = false;
+    let mut decoder = StreamDecoder::new()?;
     while got < want_frames {
         match sess.recv_envelope() {
             Ok(env) => match env.kind {
-                MessageKind::Frame => {
-                    let (w, h, rgba) = decode_frame(&env.payload)?;
-                    got = got.saturating_add(1);
-                    if !saved_first {
-                        if let Some(p) = out_path {
-                            write_ppm(p, w, h, &rgba)?;
+                MessageKind::Frame | MessageKind::FrameH264 => {
+                    if let Some((w, h, rgba)) = decoder.decode(env.kind, &env.payload)? {
+                        got = got.saturating_add(1);
+                        if !saved_first {
+                            if let Some(p) = out_path {
+                                write_ppm(p, w, h, &rgba)?;
+                            }
+                            saved_first = true;
                         }
-                        saved_first = true;
                     }
                 }
                 MessageKind::SessionEnd => break,
@@ -520,6 +522,82 @@ pub fn run_headless_controller_count(
 
 fn tethercraft_net_device_key() -> Result<SigningKey, TetherError> {
     crate::generate_device_key()
+}
+
+/// H.264 frame payload: width u32 LE, height u32 LE, then NAL units.
+pub fn encode_frame_h264(width: u32, height: u32, nal: &[u8]) -> Result<Vec<u8>, TetherError> {
+    if width == 0 || height == 0 || width > 7680 || height > 4320 {
+        return Err(TetherError::Invalid("bad frame dimensions".to_string()));
+    }
+    if nal.is_empty() || nal.len() > MAX_MESSAGE_BYTES - 8 {
+        return Err(TetherError::Invalid("bad h264 payload".to_string()));
+    }
+    let mut out = Vec::with_capacity(8 + nal.len());
+    out.extend_from_slice(&width.to_le_bytes());
+    out.extend_from_slice(&height.to_le_bytes());
+    out.extend_from_slice(nal);
+    Ok(out)
+}
+
+pub fn decode_frame_h264(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), TetherError> {
+    if bytes.len() < 8 {
+        return Err(TetherError::Invalid("h264 frame too short".to_string()));
+    }
+    let mut w = [0u8; 4];
+    let mut h = [0u8; 4];
+    w.copy_from_slice(&bytes[..4]);
+    h.copy_from_slice(&bytes[4..8]);
+    let (width, height) = (u32::from_le_bytes(w), u32::from_le_bytes(h));
+    if width == 0 || height == 0 || width > 7680 || height > 4320 {
+        return Err(TetherError::Invalid("bad frame dimensions".to_string()));
+    }
+    if bytes.len() == 8 {
+        return Err(TetherError::Invalid("empty h264 payload".to_string()));
+    }
+    Ok((width, height, bytes[8..].to_vec()))
+}
+
+/// Stateful decoder for a live stream: raw frames pass through, H.264 NALs
+/// go through a persistent decoder. `Ok(None)` means the decoder needs more
+/// data; the caller skips the frame, it is not an error.
+pub struct StreamDecoder {
+    h264: tethercraft_codec::h264::H264Decoder,
+}
+
+impl StreamDecoder {
+    pub fn new() -> Result<Self, TetherError> {
+        Ok(Self {
+            h264: tethercraft_codec::h264::H264Decoder::new()?,
+        })
+    }
+
+    pub fn decode(
+        &mut self,
+        kind: MessageKind,
+        payload: &[u8],
+    ) -> Result<Option<(u32, u32, Vec<u8>)>, TetherError> {
+        match kind {
+            MessageKind::Frame => {
+                let (w, h, px) = decode_frame(payload)?;
+                Ok(Some((w, h, px)))
+            }
+            MessageKind::FrameH264 => {
+                let (w, h, nal) = decode_frame_h264(payload)?;
+                match self.h264.decode(&nal)? {
+                    Some((dw, dh, px)) => {
+                        if dw != w || dh != h {
+                            return Err(TetherError::Invalid(
+                                "h264 dimensions disagree with header".to_string(),
+                            ));
+                        }
+                        Ok(Some((dw, dh, px)))
+                    }
+                    None => Ok(None),
+                }
+            }
+            _ => Err(TetherError::Invalid("not a frame".to_string())),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -629,5 +707,36 @@ mod tests {
         assert!(encode_frame(0, 4, &rgba).is_err());
         assert!(decode_frame(&bytes[..bytes.len() - 1]).is_err());
         assert!(decode_frame(b"junk").is_err());
+    }
+
+    #[test]
+    fn frame_h264_payload_roundtrip() {
+        let nal = vec![0u8, 0, 0, 1, 0x65, 1, 2, 3];
+        let bytes = encode_frame_h264(320, 200, &nal).unwrap_or_default();
+        assert!(!bytes.is_empty());
+        let (w, h, back) = decode_frame_h264(&bytes).unwrap_or((0, 0, Vec::new()));
+        assert!(w == 320 && h == 200);
+        assert!(back == nal);
+        assert!(encode_frame_h264(0, 200, &nal).is_err());
+        assert!(encode_frame_h264(320, 200, &[]).is_err());
+        assert!(decode_frame_h264(b"short").is_err());
+    }
+
+    #[test]
+    fn stream_decoder_passes_raw_through() {
+        let rgba = vec![7u8; 4 * 4 * 4];
+        let bytes = encode_frame(4, 4, &rgba).unwrap_or_default();
+        let mut dec = match StreamDecoder::new() {
+            Ok(d) => d,
+            Err(_) => {
+                // No Cisco binary on this machine: construction must fail
+                // consistently, and the live path reports it instead of running.
+                assert!(StreamDecoder::new().is_err());
+                return;
+            }
+        };
+        let got = dec.decode(MessageKind::Frame, &bytes).unwrap_or(None);
+        assert!(got == Some((4, 4, rgba)));
+        assert!(dec.decode(MessageKind::Ping, &bytes).is_err());
     }
 }

@@ -4,6 +4,24 @@ Tier 1 exit wants two real Windows machines over Tailscale with measured latency
 This file records what has actually been measured, on which machine, so nothing
 here is estimated.
 
+## 2026-11-25, Goliath, loopback: H.264 vs raw (real WGC 1080p)
+
+Host without `--fake-frames`, 10 frames each, `--fps 5`. Wall times here are
+capture-bound (one WGC grab per frame, roughly 400 ms on this box), not
+network-bound: the codec win shows in bytes, which is what a LAN or WAN
+would feel.
+
+| Codec | Frames | Wire bytes (8-byte header + payload each) | Per frame |
+|---|---|---|---|
+| raw RGBA | 10 | 82,944,080 | 8.3 MB |
+| H.264 (Cisco OpenH264 prebuilt) | 10 | 145,503, 0 fallbacks | 14.5 KB |
+
+That is a 570x reduction on a real desktop. The decoded frame saved as PPM is
+full 1920x1080 with sensible pixel statistics (mean 17, variance 878 on a dark
+desktop: real content, not flat). Wall time was similar either way (5.6 s raw,
+6.4 s H.264) because WGC one-shot grabs dominate; a persistent capture
+session is the next capture-side win, the codec was the transport-side one.
+
 ## 2026-11-24, Goliath to Ubuntu 24.04 VirtualBox guest (two operating systems, one physical machine)
 
 Guest: `ubu-2404-lts`, 4 vCPU, NAT (guest reaches the host at 10.0.2.2).

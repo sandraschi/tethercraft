@@ -17,6 +17,7 @@ tethercraft-proto = { path = "../tethercraft-proto" }
 tethercraft-net = { path = "../tethercraft-net" }
 tethercraft-input = { path = "../tethercraft-input" }
 tethercraft-capture = { path = "../tethercraft-capture" }
+tethercraft-codec = { path = "../tethercraft-codec" }
 tethercraft-store = { path = "../tethercraft-store" }
 
 [lints]

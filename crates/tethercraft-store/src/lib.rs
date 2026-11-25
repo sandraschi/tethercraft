@@ -109,6 +109,55 @@ impl Store {
         Ok(out)
     }
 
+    /// Find a peer by its device key hex (TOFU lookup on session start).
+    pub fn find_by_key(&self, key_hex: &str) -> Result<Option<PeerRow>, TetherError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT peer_id, alias, pubkey_hex, tier, addr FROM peers WHERE pubkey_hex=?1")
+            .map_err(|e| TetherError::Storage(format!("find: {e}")))?;
+        let mut rows = stmt
+            .query_map(params![key_hex], |r| {
+                Ok(PeerRow {
+                    peer_id: r.get(0)?,
+                    alias: r.get(1)?,
+                    pubkey_hex: r.get(2)?,
+                    tier: r.get(3)?,
+                    addr: r.get(4)?,
+                })
+            })
+            .map_err(|e| TetherError::Storage(format!("find: {e}")))?;
+        match rows.next() {
+            Some(r) => Ok(Some(
+                r.map_err(|e| TetherError::Storage(format!("row: {e}")))?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Promote or demote a stored peer. Never called from inside a session;
+    /// the CLI owns it, which is the local UI for this milestone.
+    pub fn set_tier(&self, peer_id: &str, tier: &str) -> Result<(), TetherError> {
+        match tier {
+            "stranger" | "trusted_helper" | "managed" => {}
+            _ => {
+                return Err(TetherError::Invalid(
+                    "tier must be stranger, trusted_helper or managed".to_string(),
+                ))
+            }
+        }
+        let n = self
+            .conn
+            .execute(
+                "UPDATE peers SET tier=?1 WHERE peer_id=?2",
+                params![tier, peer_id],
+            )
+            .map_err(|e| TetherError::Storage(format!("tier: {e}")))?;
+        if n == 0 {
+            return Err(TetherError::Invalid(format!("unknown peer {peer_id}")));
+        }
+        Ok(())
+    }
+
     pub fn log(&self, ev: &AuditEvent) -> Result<(), TetherError> {
         self.conn
             .execute(
