@@ -1,16 +1,15 @@
 ---
-updated: 2026-11-25T02:10:00+01:00
+updated: 2026-11-26T15:50:00+01:00
 agent: opencode-musespark
 status: in-progress
-tags: [tethercraft, rust, remote-desktop, pinned-key, tofu]
+tags: [tethercraft, rust, remote-desktop, release, v0.9.0]
 ---
 
 ## What's happening right now
 
-Trust is enforced, not just modeled. Host keys are pinned by default with TOFU
-on first contact, known keys keep their stored tier, the host has a persistent
-identity, and a tampered key is a hard refusal. 106 tests pass; clippy and fmt
-are clean.
+v0.9.0 is released as a pre-release for lab use only: tag pushed, GitHub
+release published with the plain `tethercraft.exe` asset, release notes stating
+the scope and the gap list honestly. 106 tests green at the tag commit.
 
 ## Last concrete action
 
@@ -23,6 +22,11 @@ Goliath: keyless peer records with a loud out-of-band warning, second connect
 is silent, tampered key is refused, identical host id across restarts, wrong
 password still denied and rate-limited. Cleaned all test peers from the real
 address book (now 0 peers) and restored the store backup note below.
+Cut v0.9.0 on Sandra's go: workspace version bumped to match the changelog
+(binary reports it), all gates re-run green, smoke-tested the exact artifact
+(TOFU record with warning, quiet second connect, tampered key refused,
+identical host id across restarts), tag pushed, GitHub pre-release published
+with `tethercraft.exe` and honest lab-only notes.
 
 ## Next step
 
