@@ -211,6 +211,7 @@ fn recv_or_refused(stream: &mut SessionStream) -> Result<Envelope, TetherError> 
 pub struct ControllerAuth {
     pub host_id: String,
     pub host_words: Vec<String>,
+    pub host_key: [u8; 32],
     pub grants: Vec<tethercraft_core::Permission>,
     pub fps: u8,
 }
@@ -220,6 +221,7 @@ pub fn controller_handshake(
     my_id: &str,
     signing: &SigningKey,
     password: &[u8],
+    expected_host_key: Option<[u8; 32]>,
 ) -> Result<ControllerAuth, TetherError> {
     if my_id.is_empty() {
         return Err(TetherError::Invalid("device id required".to_string()));
@@ -246,6 +248,15 @@ pub fn controller_handshake(
         return Err(TetherError::Invalid("bad welcome".to_string()));
     }
     let host_key = parse_public_key(&hex::decode(&welcome.key_hex).unwrap_or_default())?;
+    // Pinned-key enforcement: a known host must present the recorded key.
+    // First contact (None) proceeds; the caller records the key (TOFU).
+    if let Some(expected) = expected_host_key {
+        if host_key.to_bytes() != expected {
+            return Err(TetherError::Denied(
+                "host key changed: possible interception, refusing".to_string(),
+            ));
+        }
+    }
     stream.peer_key = Some(host_key.to_bytes());
     // 3. PAKE: we are side A.
     use spake2::{Ed25519Group, Identity, Password, Spake2};
@@ -292,6 +303,7 @@ pub fn controller_handshake(
     Ok(ControllerAuth {
         host_id: welcome.id,
         host_words: welcome.words,
+        host_key: host_key.to_bytes(),
         grants: start.grants,
         fps: start.fps,
     })
@@ -463,7 +475,20 @@ pub fn run_headless_controller(
     password: &[u8],
     out_path: &str,
 ) -> Result<u32, TetherError> {
-    run_headless_controller_count(addr, password, 1, Some(out_path), false)
+    Ok(run_headless_controller_count(addr, password, 1, Some(out_path), false, None)?.0)
+}
+
+/// Pinned variant: enforces the recorded host key and hands the presented key
+/// back for TOFU recording. Reads a single frame.
+pub fn run_headless_controller_pinned(
+    addr: &str,
+    password: &[u8],
+    out_path: &str,
+    expected_host_key: Option<[u8; 32]>,
+) -> Result<[u8; 32], TetherError> {
+    let (_, key) =
+        run_headless_controller_count(addr, password, 1, Some(out_path), false, expected_host_key)?;
+    Ok(key)
 }
 
 pub fn run_headless_controller_count(
@@ -472,11 +497,18 @@ pub fn run_headless_controller_count(
     want_frames: u32,
     out_path: Option<&str>,
     input_probe: bool,
-) -> Result<u32, TetherError> {
+    expected_host_key: Option<[u8; 32]>,
+) -> Result<(u32, [u8; 32]), TetherError> {
     let signing = tethercraft_net_device_key()?;
     let stream = dial(addr, Duration::from_secs(10))?;
     let mut sess = SessionStream::new(stream)?;
-    let auth = controller_handshake(&mut sess, "headless-controller", &signing, password)?;
+    let auth = controller_handshake(
+        &mut sess,
+        "headless-controller",
+        &signing,
+        password,
+        expected_host_key,
+    )?;
     sess.set_frame_timeouts()?;
     if input_probe {
         // Benign zero-delta scroll: exercises the whole input path (parse,
@@ -516,8 +548,7 @@ pub fn run_headless_controller_count(
         [0u8; 32],
         Vec::new(),
     ));
-    let _ = auth;
-    Ok(got)
+    Ok((got, auth.host_key))
 }
 
 fn tethercraft_net_device_key() -> Result<SigningKey, TetherError> {
@@ -650,10 +681,11 @@ mod tests {
                 &mut limiter,
             )
         });
-        let auth = controller_handshake(&mut c, "ctrl-1", &ck, b"correct horse").unwrap_or(
+        let auth = controller_handshake(&mut c, "ctrl-1", &ck, b"correct horse", None).unwrap_or(
             ControllerAuth {
                 host_id: String::new(),
                 host_words: Vec::new(),
+                host_key: [0u8; 32],
                 grants: Vec::new(),
                 fps: 0,
             },
@@ -688,12 +720,37 @@ mod tests {
                 &mut limiter,
             )
         });
-        assert!(controller_handshake(&mut c, "ctrl-1", &ck, b"wrong").is_err());
+        assert!(controller_handshake(&mut c, "ctrl-1", &ck, b"wrong", None).is_err());
         let host_auth = handle.join().unwrap_or(Ok(HostAuth {
             peer_id: String::new(),
             peer_key: [0u8; 32],
         }));
         assert!(host_auth.is_err());
+    }
+
+    #[test]
+    fn handshake_wrong_pin_fails() {
+        let (mut c, mut h) = loopback_pair();
+        let ck = test_key(1);
+        let hk = test_key(2);
+        let handle = std::thread::spawn(move || {
+            let mut limiter = LoginRateLimiter::new(5, 60);
+            host_handshake(
+                &mut h,
+                &hk,
+                HostHandshake {
+                    my_id: "host-1",
+                    password: b"right",
+                    peer_label: "test-peer",
+                    fps: 10,
+                    grants: Vec::new(),
+                },
+                &mut limiter,
+            )
+        });
+        // Right password, wrong pinned key: must still refuse.
+        assert!(controller_handshake(&mut c, "ctrl-1", &ck, b"right", Some([9u8; 32])).is_err());
+        let _ = handle.join();
     }
 
     #[test]

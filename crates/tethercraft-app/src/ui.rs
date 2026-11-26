@@ -59,11 +59,12 @@ pub fn clamp_zoom(z: f32) -> f32 {
 
 /// Dial the host, run the PAKE handshake, and hand the socket to two threads:
 /// one pumps frames in, one drains local input out. Runs before the window opens.
-pub fn connect_live(
+pub fn connect_live_pinned(
     addr: &str,
     password: &[u8],
     view_only: bool,
-) -> Result<LiveSource, tethercraft_core::TetherError> {
+    expected_host_key: Option<[u8; 32]>,
+) -> Result<(LiveSource, [u8; 32]), tethercraft_core::TetherError> {
     use std::net::TcpStream;
     use std::sync::mpsc;
     use tethercraft_net::session::{self, SessionStream};
@@ -72,7 +73,13 @@ pub fn connect_live(
     let signing = tethercraft_net::generate_device_key()?;
     let stream = session::dial(addr, std::time::Duration::from_secs(10))?;
     let mut sess = SessionStream::new(stream)?;
-    let auth = session::controller_handshake(&mut sess, "controller", &signing, password)?;
+    let auth = session::controller_handshake(
+        &mut sess,
+        "controller",
+        &signing,
+        password,
+        expected_host_key,
+    )?;
     sess.set_frame_timeouts()?;
     let write_stream: TcpStream = sess.clone_stream()?;
     let my_pub = tethercraft_net::public_key_bytes(&signing);
@@ -133,7 +140,8 @@ pub fn connect_live(
         view_only,
         greeting: format!("connected to {} (words: {words})", auth.host_id),
     };
-    Ok(live)
+    let key = auth.host_key;
+    Ok((live, key))
 }
 
 impl ControllerUi {

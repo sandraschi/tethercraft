@@ -403,6 +403,27 @@ pub fn ephemeral_identity() -> Result<(SigningKey, String, String), TetherError>
     Ok((signing, id, words))
 }
 
+/// Load a saved host identity or create and store one. The key file holds 32
+/// raw bytes; anyone with read access can impersonate the host, so it lives
+/// next to the store, not in the repo or backups.
+pub fn load_or_create_identity(path: &std::path::Path) -> Result<(SigningKey, bool), TetherError> {
+    if let Ok(bytes) = std::fs::read(path) {
+        if bytes.len() == 32 {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            return Ok((SigningKey::from_bytes(&arr), false));
+        }
+    }
+    let signing = generate_device_key()?;
+    let bytes = signing.to_bytes();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| TetherError::Invalid(format!("identity dir: {e}")))?;
+    }
+    std::fs::write(path, bytes).map_err(|e| TetherError::Invalid(format!("identity save: {e}")))?;
+    Ok((signing, true))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,7 +471,7 @@ mod tests {
                 TcpStream::connect(format!("127.0.0.1:{port}")).map_err(|e| e.to_string())?;
             let mut sess = SessionStream::new(stream).map_err(|e| e.to_string())?;
             let ck = SigningKey::from_bytes(&[8u8; 32]);
-            let auth = session::controller_handshake(&mut sess, "test-ctrl", &ck, b"pw")
+            let auth = session::controller_handshake(&mut sess, "test-ctrl", &ck, b"pw", None)
                 .map_err(|e| e.to_string())?;
             if auth.host_id.is_empty() {
                 return Err("empty host id".to_string());
@@ -493,5 +514,23 @@ mod tests {
         if let Ok((w, h)) = result {
             assert!(w == 640 && h == 360);
         }
+    }
+
+    #[test]
+    fn identity_persists_across_runs() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("tether-id-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("host_identity.key");
+        let first = load_or_create_identity(&path);
+        assert!(first.is_ok());
+        if let Ok((k1, _)) = first {
+            let second = load_or_create_identity(&path);
+            if let Ok((k2, fresh2)) = second {
+                assert!(!fresh2);
+                assert!(k1.to_bytes() == k2.to_bytes());
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

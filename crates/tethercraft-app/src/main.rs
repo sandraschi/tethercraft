@@ -131,6 +131,8 @@ enum Cmd {
         codec: String,
         #[arg(long)]
         pin_key: Option<String>,
+        #[arg(long)]
+        identity_file: Option<String>,
     },
     Serve {
         peer: String,
@@ -152,6 +154,7 @@ enum BookOp {
     List,
     Add {
         peer: String,
+        #[arg(default_value = "")]
         key: String,
         #[arg(long)]
         alias: Option<String>,
@@ -356,18 +359,46 @@ fn peer_list() -> Vec<(String, String)> {
     }
 }
 
-fn peer_addr(peer: &str) -> Result<String, TetherError> {
+/// Resolve a peer name to (address, pinned key). The pinned key is the
+/// book's recorded host key, if any; empty means first contact (TOFU).
+fn peer_addr_key(peer: &str) -> Result<(String, Option<[u8; 32]>), TetherError> {
     let s = open_store()?;
     let peers = s.list_peers()?;
     match peers.iter().find(|r| r.peer_id == peer) {
         Some(r) => match &r.addr {
-            Some(a) if !a.trim().is_empty() => Ok(a.clone()),
+            Some(a) if !a.trim().is_empty() => {
+                let key = match r.pubkey_hex.trim() {
+                    "" => None,
+                    hex_str => {
+                        let raw = hex::decode(hex_str).map_err(|_| {
+                            TetherError::Invalid(format!("peer {peer} has a bad recorded key"))
+                        })?;
+                        if raw.len() != 32 {
+                            return Err(TetherError::Invalid(format!(
+                                "peer {peer} has a bad recorded key"
+                            )));
+                        }
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&raw);
+                        Some(arr)
+                    }
+                };
+                Ok((a.clone(), key))
+            }
             _ => Err(TetherError::Invalid(format!(
                 "peer {peer} has no address: re-add it with --addr host:port"
             ))),
         },
         None => Err(TetherError::Invalid(format!("unknown peer {peer}"))),
     }
+}
+
+/// Record the host key on first contact (TOFU). Prints the words loudly: the
+/// human verifies them out of band, same as the SSH first-connect ritual.
+fn tofu_record(peer: &str, key: &[u8; 32]) -> Result<(), TetherError> {
+    let s = open_store()?;
+    s.set_pubkey(peer, &hex::encode(key))?;
+    Ok(())
 }
 
 fn store_path() -> String {
@@ -438,18 +469,35 @@ fn run() -> Result<(), TetherError> {
             password_file,
             headless,
         } => {
-            let addr = peer_addr(&peer)?;
+            let (addr, expected) = peer_addr_key(&peer)?;
+            let had_pin = expected.is_some();
+            // TOFU flow: dial with the recorded pin when there is one, then
+            // record a new key loudly on first contact.
+            let password = load_password(password_file.as_deref())?;
             match headless {
                 Some(out) => {
-                    let password = load_password(password_file.as_deref())?;
-                    tethercraft_net::session::run_headless_controller(&addr, &password, &out)
-                        .map_err(|e| TetherError::Invalid(format!("connect: {e}")))?;
+                    let got = tethercraft_net::session::run_headless_controller_pinned(
+                        &addr, &password, &out, expected,
+                    )
+                    .map_err(|e| TetherError::Invalid(format!("connect: {e}")))?;
+                    if !had_pin {
+                        tofu_record(&peer, &got)?;
+                        eprintln!(
+                            "recorded new host key for {peer}: VERIFY the words out of band before trusting it"
+                        );
+                    }
                     print_out(cli.json, format!("saved {out}"), json!({"saved": out}));
                     Ok(())
                 }
                 None => {
-                    let password = load_password(password_file.as_deref())?;
-                    let live = ui::connect_live(&addr, &password, view_only)?;
+                    let (live, key) =
+                        ui::connect_live_pinned(&addr, &password, view_only, expected)?;
+                    if !had_pin {
+                        tofu_record(&peer, &key)?;
+                        eprintln!(
+                            "recorded new host key for {peer}: VERIFY the words out of band before trusting it"
+                        );
+                    }
                     run_gui(peer_list(), Some(live))
                 }
             }
@@ -479,9 +527,12 @@ fn run() -> Result<(), TetherError> {
                 print_out(cli.json, format!("added {peer}"), json!({"added": peer}));
                 Ok(())
             }
-            BookOp::Rm { peer } => Err(TetherError::NotImplemented(format!(
-                "remove {peer} ships with Tier 2 store verbs"
-            ))),
+            BookOp::Rm { peer } => {
+                let s = open_store()?;
+                s.remove_peer(&peer)?;
+                print_out(cli.json, format!("forgot {peer}"), json!({"removed": peer}));
+                Ok(())
+            }
             BookOp::Promote { peer } => {
                 let s = open_store()?;
                 s.set_tier(&peer, "trusted_helper")?;
@@ -782,6 +833,7 @@ fn run() -> Result<(), TetherError> {
             fake_frames,
             codec,
             pin_key,
+            identity_file,
         } => {
             if fps == 0 || fps > 60 {
                 return Err(TetherError::Invalid("fps must be 1..=60".to_string()));
@@ -807,7 +859,22 @@ fn run() -> Result<(), TetherError> {
                 Some(g) => parse_grants(&g)?,
                 None => Vec::new(),
             };
-            let (signing, id, words) = tethercraft_host::serve::ephemeral_identity()?;
+            let id_path = match identity_file {
+                Some(p) => std::path::PathBuf::from(p),
+                None => std::path::Path::new(&store_path())
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join("host_identity.key"),
+            };
+            let (signing, fresh) = tethercraft_host::serve::load_or_create_identity(&id_path)?;
+            let pubkey = tethercraft_net::public_key_bytes(&signing);
+            let id = hex::encode(pubkey);
+            let words = tethercraft_net::fingerprint_words(&pubkey).join(" ");
+            if fresh {
+                eprintln!(
+                    "new host identity generated: VERIFY these words out of band on first connect"
+                );
+            }
             let store = open_store()?;
             let listener = tethercraft_net::session::listen(&format!("0.0.0.0:{port}"))?;
             let cfg = tethercraft_host::serve::ServeConfig {
@@ -876,15 +943,23 @@ fn run() -> Result<(), TetherError> {
             frames,
             input_probe,
         } => {
-            let addr = peer_addr(&peer)?;
+            let (addr, expected) = peer_addr_key(&peer)?;
+            let had_pin = expected.is_some();
             let password = load_password(password_file.as_deref())?;
-            let saved = tethercraft_net::session::run_headless_controller_count(
+            let (saved, key) = tethercraft_net::session::run_headless_controller_count(
                 &addr,
                 &password,
                 frames,
                 out.as_deref(),
                 input_probe,
+                expected,
             )?;
+            if !had_pin {
+                tofu_record(&peer, &key)?;
+                eprintln!(
+                    "recorded new host key for {peer}: VERIFY the words out of band before trusting it"
+                );
+            }
             print_out(
                 cli.json,
                 format!("received {n} frames, saved {saved}", n = frames),
@@ -964,6 +1039,16 @@ mod tests {
         assert!(Cli::try_parse_from(["tethercraft", "tunnel", "p", "8080:x"]).is_ok());
         assert!(Cli::try_parse_from(["tethercraft", "recordings", "list"]).is_ok());
         assert!(Cli::try_parse_from(["tethercraft", "platform"]).is_ok());
+        assert!(Cli::try_parse_from(["tethercraft", "book", "promote", "p"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "tethercraft",
+            "host",
+            "--codec",
+            "raw",
+            "--pin-key",
+            &"ab".repeat(32)
+        ])
+        .is_ok());
         assert!(Cli::try_parse_from([
             "tethercraft",
             "update-check",

@@ -72,9 +72,11 @@ impl Store {
         pubkey_hex: &str,
         addr: Option<&str>,
     ) -> Result<(), TetherError> {
-        if peer_id.is_empty() || pubkey_hex.is_empty() {
-            return Err(TetherError::Invalid("peer id and key required".to_string()));
+        if peer_id.is_empty() {
+            return Err(TetherError::Invalid("peer id required".to_string()));
         }
+        // pubkey_hex may be empty: a keyless `book add` defers to TOFU on
+        // first contact, which fills it in and warns loudly.
         self.conn
             .execute(
                 "INSERT INTO peers(peer_id, alias, pubkey_hex, tier, addr)
@@ -132,6 +134,37 @@ impl Store {
             )),
             None => Ok(None),
         }
+    }
+
+    /// Set (or rotate) the recorded host key. Used for first-contact TOFU
+    /// and for explicit re-pinning after out-of-band verification.
+    pub fn set_pubkey(&self, peer_id: &str, key_hex: &str) -> Result<(), TetherError> {
+        if key_hex.trim().len() != 64 || !key_hex.trim().chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(TetherError::Invalid("key must be 64 hex chars".to_string()));
+        }
+        let n = self
+            .conn
+            .execute(
+                "UPDATE peers SET pubkey_hex=?1 WHERE peer_id=?2",
+                params![key_hex.trim(), peer_id],
+            )
+            .map_err(|e| TetherError::Storage(format!("key: {e}")))?;
+        if n == 0 {
+            return Err(TetherError::Invalid(format!("unknown peer {peer_id}")));
+        }
+        Ok(())
+    }
+
+    /// Remove a peer and forget its key. Trust removal is explicit and local.
+    pub fn remove_peer(&self, peer_id: &str) -> Result<(), TetherError> {
+        let n = self
+            .conn
+            .execute("DELETE FROM peers WHERE peer_id=?1", params![peer_id])
+            .map_err(|e| TetherError::Storage(format!("remove: {e}")))?;
+        if n == 0 {
+            return Err(TetherError::Invalid(format!("unknown peer {peer_id}")));
+        }
+        Ok(())
     }
 
     /// Promote or demote a stored peer. Never called from inside a session;
@@ -243,9 +276,10 @@ mod tests {
                 .add_peer("p1", Some("Office PC"), "ab12", Some("127.0.0.1:21120"))
                 .is_ok());
             assert!(s.add_peer("", None, "x", None).is_err());
+            assert!(s.add_peer("keyless", None, "", Some("127.0.0.1:9")).is_ok());
             let peers = s.list_peers().unwrap_or_default();
-            assert!(peers.len() == 1);
-            assert!(peers[0].tier == "stranger");
+            assert!(peers.len() == 2);
+            assert!(peers.iter().all(|p| p.tier == "stranger"));
             let ev = AuditEvent::new(Utc::now(), "p1", "connect", "ok");
             assert!(s.log(&ev).is_ok());
             let log = s.list_audit(10).unwrap_or_default();
@@ -257,6 +291,41 @@ mod tests {
                 .block_peer("scammer-1", "tech-support scam", Utc::now())
                 .is_ok());
             assert!(s.is_blocked("scammer-1"));
+        }
+    }
+
+    #[test]
+    fn key_lookup_and_trust_changes() {
+        let opened = Store::open_in_memory();
+        assert!(opened.is_ok());
+        if let Ok(s) = opened {
+            assert!(s.add_peer("p1", None, "aa", None).is_ok());
+            assert!(s.find_by_key("aa").unwrap_or(None).is_some());
+            assert!(s.find_by_key("bb").unwrap_or(None).is_none());
+            // TOFU key update and tier moves.
+            assert!(s.set_pubkey("p1", "bb").is_err());
+            assert!(s
+                .set_pubkey(
+                    "p1",
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                )
+                .is_ok());
+            let row =
+                s.find_by_key("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+            assert!(row.unwrap_or(None).is_some());
+            assert!(s.set_tier("p1", "family").is_err());
+            assert!(s.set_tier("ghost", "trusted_helper").is_err());
+            assert!(s.set_tier("p1", "trusted_helper").is_ok());
+            let peers = s.list_peers().unwrap_or_default();
+            assert!(peers.len() == 1);
+            assert!(peers[0].tier == "trusted_helper");
+            assert!(s.set_tier("p1", "stranger").is_ok());
+            assert!(s.remove_peer("ghost").is_err());
+            assert!(s.remove_peer("p1").is_ok());
+            assert!(s
+                .find_by_key("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+                .unwrap_or(None)
+                .is_none());
         }
     }
 }

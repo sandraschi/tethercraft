@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.0 - 2026-11-25
+
+- Trust on first use, enforced. `book add` takes an optional key; the first
+  successful handshake records the host key and warns loudly to verify the
+  fingerprint words out of band. Every later handshake compares against the
+  recorded key and refuses on mismatch ("possible interception"). Known keys
+  keep their stored tier instead of resetting to stranger. `--pin-key`
+  restricts a host to one key. `--identity-file` gives the host a persistent
+  identity (default next to the store). `book promote/demote/remove` manage
+  trust from the local UI.
+- Verified live: TOFU record plus warning, silent second connect, tampered key
+  refused, identical host id across restarts with the same identity file.
+- 106 tests green; clippy and fmt clean.
+
 ## 0.8.0 - 2026-11-25
 
 - H.264 software codec over the wire: `tethercraft-codec::h264` on Cisco's

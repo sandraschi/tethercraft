@@ -93,6 +93,7 @@ fn run() -> Result<(), TetherError> {
         "linux-probe",
         &signing,
         args.password.as_bytes(),
+        None,
     )?;
     let handshake_ms = hs_start.elapsed().as_millis();
 

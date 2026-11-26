@@ -42,7 +42,9 @@ machine has little free space on D:.
    ```
 
 4. Drop `--fake-frames` on the host for real WGC capture, and add
-   `--out /home/user/live.ppm` to the probe to keep a frame.
+   `--out /home/user/live.ppm` to the probe to keep a frame. The cross-OS
+   recipe can only test `raw` for now: the probe has no H.264 decoder, so if
+   the host streams H.264 it says so instead of hanging.
 
 ## Reading the output
 
