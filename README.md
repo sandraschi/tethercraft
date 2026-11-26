@@ -50,6 +50,8 @@ comparison, not a certificate authority.
 
 ## Layout
 
+> **Operator Guide & Crate Docs:** See [`HELP.md`](HELP.md) for the quickstart tour, scam-resistance summary (R1–R7), and links to all 12 crate sub-READMEs (`crates/tethercraft-*/README.md`).
+
 | Crate | Role |
 |---|---|
 | `tethercraft-core` | Command bus, permissions, peer tiers (R2), onboarding state (R1), audit events |
