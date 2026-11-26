@@ -7,9 +7,13 @@ license.workspace = true
 [dependencies]
 serde = { workspace = true }
 egui = "0.32"
-openh264 = "0.9"
+openh264 = { version = "0.9", optional = true }
 thiserror = { workspace = true }
 tethercraft-core = { path = "../tethercraft-core" }
+
+[features]
+default = ["h264"]
+h264 = ["dep:openh264"]
 
 [lints]
 workspace = true

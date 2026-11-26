@@ -591,15 +591,28 @@ pub fn decode_frame_h264(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), TetherErro
 /// Stateful decoder for a live stream: raw frames pass through, H.264 NALs
 /// go through a persistent decoder. `Ok(None)` means the decoder needs more
 /// data; the caller skips the frame, it is not an error.
+///
+/// Without the `h264` feature (cross builds like the musl probe) the H.264
+/// path reports NotImplemented and raw keeps working.
 pub struct StreamDecoder {
+    #[cfg(feature = "h264")]
     h264: tethercraft_codec::h264::H264Decoder,
 }
 
 impl StreamDecoder {
     pub fn new() -> Result<Self, TetherError> {
-        Ok(Self {
-            h264: tethercraft_codec::h264::H264Decoder::new()?,
-        })
+        #[cfg(feature = "h264")]
+        {
+            Ok(Self {
+                h264: tethercraft_codec::h264::H264Decoder::new()?,
+            })
+        }
+        #[cfg(not(feature = "h264"))]
+        {
+            Err(TetherError::NotImplemented(
+                "h264 disabled in this build; raw frames only".to_string(),
+            ))
+        }
     }
 
     pub fn decode(
@@ -612,6 +625,7 @@ impl StreamDecoder {
                 let (w, h, px) = decode_frame(payload)?;
                 Ok(Some((w, h, px)))
             }
+            #[cfg(feature = "h264")]
             MessageKind::FrameH264 => {
                 let (w, h, nal) = decode_frame_h264(payload)?;
                 match self.h264.decode(&nal)? {
@@ -626,6 +640,10 @@ impl StreamDecoder {
                     None => Ok(None),
                 }
             }
+            #[cfg(not(feature = "h264"))]
+            MessageKind::FrameH264 => Err(TetherError::NotImplemented(
+                "h264 disabled in this build; restart the host with --codec raw".to_string(),
+            )),
             _ => Err(TetherError::Invalid("not a frame".to_string())),
         }
     }

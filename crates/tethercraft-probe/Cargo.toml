@@ -14,7 +14,7 @@ path = "src/main.rs"
 serde_json = { workspace = true }
 tethercraft-core = { path = "../tethercraft-core" }
 tethercraft-input = { path = "../tethercraft-input" }
-tethercraft-net = { path = "../tethercraft-net" }
+tethercraft-net = { path = "../tethercraft-net", default-features = false }
 tethercraft-proto = { path = "../tethercraft-proto" }
 
 [lints]

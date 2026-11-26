@@ -18,7 +18,11 @@ thiserror = { workspace = true }
 tethercraft-core = { path = "../tethercraft-core" }
 tethercraft-proto = { path = "../tethercraft-proto" }
 tethercraft-input = { path = "../tethercraft-input" }
-tethercraft-codec = { path = "../tethercraft-codec" }
+tethercraft-codec = { path = "../tethercraft-codec", default-features = false }
+
+[features]
+default = ["h264"]
+h264 = ["tethercraft-codec/h264"]
 
 [lints]
 workspace = true

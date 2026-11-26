@@ -1,5 +1,6 @@
 //! Video codecs: one hardware encoder plus VP9 software fallback (interface).
 
+#[cfg(feature = "h264")]
 pub mod h264;
 pub mod rec;
 
