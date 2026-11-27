@@ -1,57 +1,67 @@
 ---
-updated: 2026-11-26T15:50:00+01:00
+updated: 2026-11-27T09:38:00+01:00
 agent: opencode-musespark
 status: in-progress
-tags: [tethercraft, rust, remote-desktop, release, v0.9.0]
+tags: [tethercraft, rust, remote-desktop, tier2, relay, service, mcp]
 ---
 
 ## What's happening right now
 
-v0.9.0 is released as a pre-release for lab use only: tag pushed, GitHub
-release published with the plain `tethercraft.exe` asset, release notes stating
-the scope and the gap list honestly. 106 tests green at the tag commit.
+Tier 2 command bus is live over real sessions on loopback: file transfer
+(list/get/put/rename/rm/mkdir/hash), folder sync planner with remote diff,
+broadcast/collect/batch, exec with 30 s kill and 64 KiB cap, power
+(restart/shutdown/lock), TCP tunnels, chat, screenshots. Relay-first NAT
+traversal is in: server `await_bridge`/`bridge`/`check`/`claim` ops with
+one-time tokens and raw byte piping (loopback-tested, operator can read
+sessions until E2E encryption lands, so self-host only for now), `--via`
+dialing on every controller verb plus headless `serve` and GUI connect, host
+relay-await mode, and a stoppable await for the Windows service. MCP is
+stateful: connect/disconnect/sessions plus confirm-gated exec, files,
+tunnel, power, chat and input over live sessions, all audited. Host runs as
+a Windows SCM service from `%PROGRAMDATA%\TetherCraft\host.json`
+(`service install|start|stop|uninstall`, hidden `service-run`).
 
 ## Last concrete action
 
-Added `net::controller_handshake` expected-key check (mismatch is `Denied`),
-`store.set_pubkey`/`set_tier`/`find_by_key`/`remove_peer`, `book add` with an
-optional key, `book promote/demote/remove`, `host --identity-file` (default
-next to the store) with `load_or_create_identity`, host-side TOFU auto-record
-with stored-tier application, and `--pin-key` strict mode. Verified live on
-Goliath: keyless peer records with a loud out-of-band warning, second connect
-is silent, tampered key is refused, identical host id across restarts, wrong
-password still denied and rate-limited. Cleaned all test peers from the real
-address book (now 0 peers) and restored the store backup note below.
-Cut v0.9.0 on Sandra's go: workspace version bumped to match the changelog
-(binary reports it), all gates re-run green, smoke-tested the exact artifact
-(TOFU record with warning, quiet second connect, tampered key refused,
-identical host id across restarts), tag pushed, GitHub pre-release published
-with `tethercraft.exe` and honest lab-only notes.
+Five commits on main, all gates green (clippy with `-D warnings`, fmt check,
+whole workspace tests: 112 passed): live session verbs, relay bridge plus
+dial paths and host relay-await with headless `--via`, stateful MCP, Windows
+host service with stoppable relay await, and a double-hex file-hash fix
+(`hash_bytes` already returns hex) found by a new loopback file roundtrip
+test (list/get/hash against a real host with a trusted_helper peer).
 
 ## Next step
 
-Second PC for Tailscale and real WAN/LAN numbers, then the codec re-measure
-there. The remaining security item is the GUI path: `connect_live` takes the
-pin but the window flow has no TOFU-notice surface yet.
+Two-machine LAN/Tailscale run and the codec re-measure there; relay E2E
+encryption design (self-host-only until then); the GUI TOFU-notice surface
+(`connect_live` takes the pin but the window flow has no notice yet);
+unsigned areas stay honest in the README matrix.
 
 ## Blockers
 
-Second physical PC. Windows guest `win11-automated` still needs one interactive
-login before guest control works. D: is tight; build trees were cleaned again
-after the release build.
+Second physical PC. Windows guest `win11-automated` still needs one
+interactive login before guest control works. Relay operator readability is
+a known interim weakness, not a blocker for lab use.
 
 ## Context the next agent needs
 
-- Trust model now: password plus pinned host key (TOFU with loud first-contact
-  warning), stored tiers survive reconnects, `--pin-key` for strict single-key
-  hosts, `book remove` forgets. Host keys that were recorded before this change
-  do not exist; every peer re-records on next connect.
-- Verified numbers: H.264 14.5 KB/frame vs raw 8.3 MB (570x), 642x360 loopback
-  at 21 fps synthetic, 1080p real capture at ~1.6 fps (capture-bound one-shot
-  WGC, not transport).
+- Trust model: password plus pinned host key (TOFU with loud first-contact
+  warning), stored tiers survive reconnects, `--pin-key` for strict hosts,
+  `book remove` forgets. File/terminal/tunnel verbs are denied for
+  strangers by design; tests promote the peer to trusted_helper first.
+- Relay pairing: host `await_bridge` with its pubkey-hex id, controller
+  `bridge` to that id, both `claim` the token, server pipes raw bytes.
+  Controller relay dials require a known host key (no relay TOFU).
+- Service runs as LocalSystem on demand; config template grants nothing
+  until the admin edits it. No silent install, no hidden tray.
+- MCP mutating tools need `confirm=true`, passwords come from
+  `password_file`, sessions are one per peer id.
+- Verified numbers unchanged: H.264 14.5 KB/frame vs raw 8.3 MB (570x),
+  642x360 loopback at 21 fps synthetic, 1080p real capture at ~1.6 fps
+  (capture-bound one-shot WGC, not transport).
 - VM state: `win11-automated` at `ready-1080p-2026-10-10`, powered off.
   `ubu-2404-lts` powered off, test files removed.
-- Clean room holds. O3 unchanged (verified versions already recorded).
-- Commit discipline held: max 10 files per commit, LF, no em dash.
+- Clean room holds. Commit discipline held: max 10 files per commit, LF,
+  no em dash, ASCII only.
 - Pre-existing test store: `%LOCALAPPDATA%\tethercraft\store.sqlite3.testbak`
   is the backup from the Tier 1 session; the live store is intentionally empty.

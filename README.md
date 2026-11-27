@@ -15,8 +15,11 @@ native protocol only, Windows only. Clean room: no RustDesk source is opened.
 
 Tier 0 done. Tiers 1-5 domain logic done. **Live single-machine sessions work
 today**: real SPAKE2 handshake, real WGC capture, frames over TCP, input
-injection, host policy enforced per message, audit written. Not yet done: the
-two-machine LAN/Tailscale run, codecs, host service, OS sensors. See
+injection, host policy enforced per message, audit written. Live over sessions
+too: file transfer, exec, power, TCP tunnels and chat, all permission-gated;
+rendezvous relay with bridge/claim pairing for NAT (`--via`), host as a Windows
+service from a JSON config, and a stateful MCP server with confirm-gated live
+tools. Not yet done: the two-machine LAN/Tailscale run, codecs, OS sensors. See
 `HANDOVER.md` and `docs/BENCH.md` for measured numbers.
 
 ## Controller UI
@@ -61,10 +64,10 @@ comparison, not a certificate authority.
 | `tethercraft-codec` | Hardware encoder plus VP9 software fallback (interface + VP9 path marker) |
 | `tethercraft-input` | Input injection interface, permission-checked by host |
 | `tethercraft-host` | Host policy enforcement: every message checked, stranger defaults, session caps |
-| `tethercraft-server` | Self-hosted rendezvous and relay placeholder (Tier 3, not implemented) |
+| `tethercraft-server` | Self-hosted rendezvous, relay mailbox, and bridge/claim pairing for NAT (loopback-tested raw byte pipe) |
 | `tethercraft-store` | SQLite address book, settings, audit log |
-| `tethercraft-mcp` | stdio MCP server, read tools |
-| `tethercraft-app` | CLI (`status`, `id`, `peers`, `peer-info`, `connect`, `screenshot`, `book`, `audit`, `wake`, `files`, `sync`, `broadcast-file`, `collect-files`, `batch`, `restart`, `shutdown`, `lock`, `exec`, `tunnel`, `recordings`, `update-check`, `platform`, `host`, `serve`, `gui`, `server`) with `--json`, plus the egui controller window |
+| `tethercraft-mcp` | stdio MCP server with live sessions: read tools open, mutating tools need confirm and are audited |
+| `tethercraft-app` | CLI (`status`, `id`, `peers`, `peer-info`, `connect`, `screenshot`, `book`, `audit`, `wake`, `files`, `sync`, `broadcast-file`, `collect-files`, `batch`, `restart`, `shutdown`, `lock`, `exec`, `tunnel`, `chat`, `service`, `recordings`, `update-check`, `platform`, `host`, `serve`, `gui`, `server`) with `--json`, global `--via` relay dialing and `--password-file`, plus the egui controller window |
 | `tethercraft-probe` | Headless controller for cross-OS testing; no GUI, capture, store or codec deps, so it cross-compiles (`x86_64-unknown-linux-musl`) and runs as a Linux controller against a Windows host |
 
 ## Feature matrix (PRD section 6 rows)
