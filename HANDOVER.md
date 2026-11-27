@@ -1,11 +1,18 @@
 ---
-updated: 2026-11-27T09:38:00+01:00
+updated: 2026-11-28T00:10:00+01:00
 agent: opencode-musespark
 status: in-progress
-tags: [tethercraft, rust, remote-desktop, tier2, relay, service, mcp]
+tags: [tethercraft, rust, remote-desktop, tier2, relay, service, mcp, gui-board]
 ---
 
 ## What's happening right now
+
+RustDesk-style peer board is live in the egui controller: cards with alias,
+id, address, and a green pinned-key / amber first-contact dot, search
+filtering by name/id/address, click to select, double-click (or Connect) to
+start. Stacked on another agent's zoom/sidebar commit; no conflicts. GUI
+dialing from the window (password prompt plus background handshake) is still
+open, as is the TOFU-notice surface.
 
 Tier 2 command bus is live over real sessions on loopback: file transfer
 (list/get/put/rename/rm/mkdir/hash), folder sync planner with remote diff,
@@ -22,6 +29,12 @@ a Windows SCM service from `%PROGRAMDATA%\TetherCraft\host.json`
 (`service install|start|stop|uninstall`, hidden `service-run`).
 
 ## Last concrete action
+
+Peer board commit on main, all gates green (clippy with `-D warnings`, fmt
+check, whole workspace tests: 114 passed): `PeerCard` with
+addr plus pinned-key state, search box with result count, card grid with
+selection ring, per-card Connect plus double-click to start, empty-book hint
+with the `book add` command. README Controller UI section updated.
 
 Five commits on main, all gates green (clippy with `-D warnings`, fmt check,
 whole workspace tests: 112 passed): live session verbs, relay bridge plus
