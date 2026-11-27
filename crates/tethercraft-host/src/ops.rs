@@ -251,7 +251,7 @@ pub fn handle_file(
                                     .unwrap_or(0);
                                 let resp = proto::FileHashResp {
                                     req_id: r.req_id,
-                                    hash_hex: hex::encode(crate::sync::hash_bytes(&d)),
+                                    hash_hex: crate::sync::hash_bytes(&d),
                                     size: d.len() as u64,
                                     mtime,
                                 };

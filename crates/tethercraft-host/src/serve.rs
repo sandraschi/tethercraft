@@ -950,6 +950,99 @@ mod tests {
         }
     }
 
+    /// File verbs over a real session: list, download, hash. Proves the
+    /// file path end to end, not just the rpc pieces.
+    #[test]
+    fn serve_one_file_roundtrip() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("tether-share-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        if std::fs::write(dir.join("hello.txt"), b"hello-tether").is_err() {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|_| std::process::exit(111));
+        let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+        if port == 0 {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let cfg = ServeConfig {
+            port,
+            password: b"pw".to_vec(),
+            grants: vec![Permission::File],
+            fps: 10,
+            fake_frames: true,
+            outgoing_only: false,
+            stop: stop.clone(),
+            codec: "raw".to_string(),
+            pin_key: None,
+            share_root: Some(dir.clone()),
+        };
+        let signing = SigningKey::from_bytes(&[9u8; 32]);
+        let store = match tethercraft_store::Store::open_in_memory() {
+            Ok(s) => s,
+            Err(_) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return;
+            }
+        };
+        // Files are denied for strangers: promote the test controller first.
+        let ck = SigningKey::from_bytes(&[8u8; 32]);
+        let ck_hex = hex::encode(tethercraft_net::public_key_bytes(&ck));
+        if store.add_peer("test-ctrl", None, &ck_hex, None).is_err()
+            || store.set_tier("test-ctrl", "trusted_helper").is_err()
+        {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let handle = std::thread::spawn(move || serve_one(&listener, &cfg, &signing, &store));
+        let result: Result<(), String> = (|| {
+            let stream =
+                TcpStream::connect(format!("127.0.0.1:{port}")).map_err(|e| e.to_string())?;
+            let mut sess = SessionStream::new(stream).map_err(|e| e.to_string())?;
+            let _auth = session::controller_handshake(&mut sess, "test-ctrl", &ck, b"pw", None)
+                .map_err(|e| e.to_string())?;
+            sess.set_frame_timeouts().map_err(|e| e.to_string())?;
+            let entries =
+                tethercraft_net::rpc::file_list(&mut sess, 1, ".").map_err(|e| e.to_string())?;
+            if !entries.iter().any(|e| e.name == "hello.txt" && !e.is_dir) {
+                return Err("hello.txt missing from listing".to_string());
+            }
+            let data = tethercraft_net::rpc::file_get(&mut sess, 2, "hello.txt")
+                .map_err(|e| e.to_string())?;
+            if data != b"hello-tether" {
+                return Err("file content mismatch".to_string());
+            }
+            let (hash_hex, size, _mtime) =
+                tethercraft_net::rpc::file_hash(&mut sess, 3, "hello.txt")
+                    .map_err(|e| e.to_string())?;
+            if size != 12 {
+                return Err(format!("bad size: {size}"));
+            }
+            if hash_hex.len() != 64 {
+                return Err(format!("bad hash: {hash_hex}"));
+            }
+            let _ = sess.send_envelope(&Envelope::new(
+                MessageKind::SessionEnd,
+                [0u8; 32],
+                Vec::new(),
+            ));
+            Ok(())
+        })();
+        stop.store(true, Ordering::Relaxed);
+        let report = handle
+            .join()
+            .unwrap_or(Err(TetherError::Invalid("join".to_string())));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_ok(), "client failed: {result:?}");
+        assert!(report.is_ok());
+    }
+
     #[test]
     fn identity_persists_across_runs() {
         let mut dir = std::env::temp_dir();
