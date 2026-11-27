@@ -35,6 +35,67 @@ struct Entry {
 struct Shared {
     reg: HashMap<String, Entry>,
     boxes: HashMap<String, mpsc::Sender<String>>,
+    /// Host ids waiting for a controller: (None, since) = waiting,
+    /// (Some(token), since) = a controller asked and the token is ready.
+    awaiting: HashMap<String, (Option<String>, Instant)>,
+    /// In-progress relay pairings, keyed by one-time token.
+    pending: HashMap<String, PendingBridge>,
+    token_counter: u64,
+}
+
+struct PendingBridge {
+    a: Option<TcpStream>,
+    b: Option<TcpStream>,
+    created: Instant,
+}
+
+/// Pending pairings older than this are dropped on the next bridge op.
+const BRIDGE_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn next_token(counter: &mut u64) -> String {
+    *counter = counter.wrapping_add(1);
+    format!(
+        "{:016x}",
+        (*counter).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0)
+        )
+    )
+}
+
+fn sweep_bridges(shared: &mut Shared) {
+    let now = Instant::now();
+    let live: std::collections::HashSet<String> = shared
+        .pending
+        .iter()
+        .filter(|(_, p)| now.duration_since(p.created) <= BRIDGE_TIMEOUT)
+        .map(|(k, _)| k.clone())
+        .collect();
+    shared.pending.retain(|k, _| live.contains(k));
+    shared.awaiting.retain(|_, v| match v {
+        (None, _) => true,
+        (Some(tok), _) => live.contains(tok),
+    });
+}
+
+/// Copy bytes both ways until either side goes away. The relay never looks
+/// at the payload: after the handshake this is opaque session traffic.
+fn bridge_pair(a: TcpStream, b: TcpStream) {
+    let (mut a_read, mut b_write) = match (a.try_clone(), b.try_clone()) {
+        (Ok(ar), Ok(bw)) => (ar, bw),
+        _ => return,
+    };
+    let mut b_read = b;
+    let mut a_write = a;
+    let t = std::thread::spawn(move || {
+        let _ = std::io::copy(&mut a_read, &mut b_write);
+        let _ = b_write.shutdown(std::net::Shutdown::Write);
+    });
+    let _ = std::io::copy(&mut b_read, &mut a_write);
+    let _ = a_write.shutdown(std::net::Shutdown::Write);
+    let _ = t.join();
 }
 
 /// One client request. `bytes` carries opaque hex (relay frames); the server
@@ -46,6 +107,8 @@ struct Req {
     key: Option<String>,
     to: Option<String>,
     bytes: Option<String>,
+    token: Option<String>,
+    role: Option<String>,
 }
 
 fn reply(stream: &mut TcpStream, v: &serde_json::Value) -> Result<(), TetherError> {
@@ -204,6 +267,168 @@ fn handle_conn(shared: Arc<Mutex<Shared>>, stream: TcpStream) {
                 };
                 let _ = reply(&mut writer, &serde_json::json!({"ok": routed}));
             }
+            "await_bridge" => {
+                let id = match req.id {
+                    Some(i) if !i.is_empty() => i,
+                    _ => {
+                        let _ = reply(
+                            &mut writer,
+                            &serde_json::json!({"ok": false, "error": "id required"}),
+                        );
+                        continue;
+                    }
+                };
+                {
+                    let mut sh = lock_shared(&shared);
+                    sweep_bridges(&mut sh);
+                    sh.awaiting.insert(id, (None, Instant::now()));
+                }
+                let _ = reply(&mut writer, &serde_json::json!({"ok": true}));
+            }
+            "check" => {
+                let id = match req.id {
+                    Some(i) if !i.is_empty() => i,
+                    _ => {
+                        let _ = reply(
+                            &mut writer,
+                            &serde_json::json!({"ok": false, "error": "id required"}),
+                        );
+                        continue;
+                    }
+                };
+                let found = {
+                    let mut sh = lock_shared(&shared);
+                    sweep_bridges(&mut sh);
+                    match sh.awaiting.get(&id) {
+                        Some((Some(token), _)) => Some(token.clone()),
+                        _ => None,
+                    }
+                };
+                match found {
+                    Some(token) => {
+                        let _ = reply(
+                            &mut writer,
+                            &serde_json::json!({"ok": true, "token": token}),
+                        );
+                    }
+                    None => {
+                        let _ = reply(&mut writer, &serde_json::json!({"ok": false}));
+                    }
+                }
+            }
+            "bridge" => {
+                let to = match req.to {
+                    Some(t) if !t.is_empty() => t,
+                    _ => {
+                        let _ = reply(
+                            &mut writer,
+                            &serde_json::json!({"ok": false, "error": "target required"}),
+                        );
+                        continue;
+                    }
+                };
+                let token = {
+                    let mut sh = lock_shared(&shared);
+                    sweep_bridges(&mut sh);
+                    match sh.awaiting.get_mut(&to) {
+                        Some((None, _)) => {
+                            let token = next_token(&mut sh.token_counter);
+                            if let Some(slot) = sh.awaiting.get_mut(&to) {
+                                *slot = (Some(token.clone()), Instant::now());
+                            }
+                            sh.pending.insert(
+                                token.clone(),
+                                PendingBridge {
+                                    a: None,
+                                    b: None,
+                                    created: Instant::now(),
+                                },
+                            );
+                            Some(token)
+                        }
+                        _ => None,
+                    }
+                };
+                match token {
+                    Some(t) => {
+                        let _ = reply(&mut writer, &serde_json::json!({"ok": true, "token": t}));
+                    }
+                    None => {
+                        let _ = reply(
+                            &mut writer,
+                            &serde_json::json!({"ok": false, "error": "target not waiting (host must await first)"}),
+                        );
+                    }
+                }
+            }
+            "claim" => {
+                let (token, role) = match (req.token, req.role) {
+                    (Some(t), Some(r)) if !t.is_empty() && (r == "a" || r == "b") => (t, r),
+                    _ => {
+                        let _ = reply(
+                            &mut writer,
+                            &serde_json::json!({"ok": false, "error": "token and role a|b required"}),
+                        );
+                        continue;
+                    }
+                };
+                enum ClaimOutcome {
+                    Waiting,
+                    Paired(TcpStream, TcpStream),
+                    Gone,
+                }
+                let outcome = {
+                    let mut sh = lock_shared(&shared);
+                    sweep_bridges(&mut sh);
+                    match sh.pending.get_mut(&token) {
+                        None => ClaimOutcome::Gone,
+                        Some(p) => {
+                            let slot = if role == "a" { &mut p.a } else { &mut p.b };
+                            if slot.is_some() {
+                                ClaimOutcome::Gone
+                            } else {
+                                match writer.try_clone() {
+                                    Err(_) => ClaimOutcome::Gone,
+                                    Ok(mine) => {
+                                        *slot = Some(mine);
+                                        match (&p.a, &p.b) {
+                                            (Some(_), Some(_)) => match sh.pending.remove(&token) {
+                                                Some(e) => match (e.a, e.b) {
+                                                    (Some(a), Some(b)) => {
+                                                        ClaimOutcome::Paired(a, b)
+                                                    }
+                                                    _ => ClaimOutcome::Gone,
+                                                },
+                                                None => ClaimOutcome::Gone,
+                                            },
+                                            _ => ClaimOutcome::Waiting,
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+                match outcome {
+                    ClaimOutcome::Gone => {
+                        let _ = reply(
+                            &mut writer,
+                            &serde_json::json!({"ok": false, "error": "bad or expired token"}),
+                        );
+                    }
+                    ClaimOutcome::Waiting => {
+                        // Registered; stop reading here so no handler thread
+                        // competes with the copier threads for session bytes.
+                        let _ = reply(&mut writer, &serde_json::json!({"ok": true}));
+                        return;
+                    }
+                    ClaimOutcome::Paired(a, b) => {
+                        let _ = reply(&mut writer, &serde_json::json!({"ok": true}));
+                        std::thread::spawn(move || bridge_pair(a, b));
+                        return;
+                    }
+                }
+            }
             _ => {
                 let _ = reply(
                     &mut writer,
@@ -226,6 +451,9 @@ pub fn serve(listener: TcpListener, stop: Arc<AtomicBool>) -> Result<(), TetherE
     let shared = Arc::new(Mutex::new(Shared {
         reg: HashMap::new(),
         boxes: HashMap::new(),
+        awaiting: HashMap::new(),
+        pending: HashMap::new(),
+        token_counter: 0,
     }));
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
@@ -386,6 +614,84 @@ mod tests {
         assert!(
             a.req(serde_json::json!({"op": "send", "to": "ghost", "bytes": "00"}))["ok"] == false
         );
+        stop.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn bridge_connects_two_peers() {
+        use std::io::{BufRead, BufReader, Write};
+        let (port, stop) = test_server();
+        if port == 0 {
+            return;
+        }
+        let mut host = Client::dial(port).unwrap_or_else(|| {
+            stop.store(true, Ordering::Relaxed);
+            std::process::exit(114)
+        });
+        let mut ctrl = Client::dial(port).unwrap_or_else(|| {
+            stop.store(true, Ordering::Relaxed);
+            std::process::exit(115)
+        });
+        assert!(host.req(serde_json::json!({"op": "await_bridge", "id": "host-1"}))["ok"] == true);
+        // Unknown target is refused without touching any state.
+        let no = ctrl.req(serde_json::json!({"op": "bridge", "to": "nobody"}));
+        assert!(no["ok"] == false);
+        let bridge = ctrl.req(serde_json::json!({"op": "bridge", "to": "host-1"}));
+        assert!(bridge["ok"] == true);
+        let token = bridge["token"].as_str().unwrap_or("").to_string();
+        assert!(!token.is_empty());
+        // Host discovers the token by polling, like the real host does.
+        let mut seen = String::new();
+        for _ in 0..50 {
+            let check = host.req(serde_json::json!({"op": "check", "id": "host-1"}));
+            if check["ok"] == true {
+                seen = check["token"].as_str().unwrap_or("").to_string();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(seen == token);
+        // Both sides open fresh connections and claim their half.
+        let mut hc = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap_or_else(|_| {
+            stop.store(true, Ordering::Relaxed);
+            std::process::exit(116)
+        });
+        let _ = hc.set_read_timeout(Some(Duration::from_secs(5)));
+        let mut hr = BufReader::new(hc.try_clone().unwrap_or_else(|_| {
+            stop.store(true, Ordering::Relaxed);
+            std::process::exit(117)
+        }));
+        let mut cc = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap_or_else(|_| {
+            stop.store(true, Ordering::Relaxed);
+            std::process::exit(118)
+        });
+        let _ = cc.set_read_timeout(Some(Duration::from_secs(5)));
+        let mut cr = BufReader::new(cc.try_clone().unwrap_or_else(|_| {
+            stop.store(true, Ordering::Relaxed);
+            std::process::exit(119)
+        }));
+        let claim_b =
+            serde_json::json!({"op": "claim", "token": token, "role": "b"}).to_string() + "\n";
+        let claim_a =
+            serde_json::json!({"op": "claim", "token": token, "role": "a"}).to_string() + "\n";
+        assert!(hc.write_all(claim_b.as_bytes()).is_ok());
+        assert!(cc.write_all(claim_a.as_bytes()).is_ok());
+        let mut line = String::new();
+        assert!(hr.read_line(&mut line).is_ok());
+        assert!(line.contains("\"ok\":true"));
+        line.clear();
+        assert!(cr.read_line(&mut line).is_ok());
+        assert!(line.contains("\"ok\":true"));
+        // Raw bytes now flow controller -> host through the relay.
+        assert!(cc.write_all(b"PING?\n").is_ok());
+        let mut got = String::new();
+        assert!(hr.read_line(&mut got).is_ok());
+        assert!(got.trim() == "PING?");
+        // And back the other way.
+        assert!(hc.write_all(b"PONG!\n").is_ok());
+        got.clear();
+        assert!(cr.read_line(&mut got).is_ok());
+        assert!(got.trim() == "PONG!");
         stop.store(true, Ordering::Relaxed);
     }
 

@@ -64,6 +64,7 @@ pub fn connect_live_pinned(
     password: &[u8],
     view_only: bool,
     expected_host_key: Option<[u8; 32]>,
+    via: Option<&str>,
 ) -> Result<(LiveSource, [u8; 32]), tethercraft_core::TetherError> {
     use std::net::TcpStream;
     use std::sync::mpsc;
@@ -71,7 +72,18 @@ pub fn connect_live_pinned(
     use tethercraft_proto::{Envelope, MessageKind};
 
     let signing = tethercraft_net::generate_device_key()?;
-    let stream = session::dial(addr, std::time::Duration::from_secs(10))?;
+    let stream = match via {
+        Some(server) => {
+            let expected = expected_host_key.ok_or_else(|| {
+                tethercraft_core::TetherError::Invalid(
+                    "relay needs a known host key: connect directly first (or use --pin-key)"
+                        .to_string(),
+                )
+            })?;
+            session::relay_connect(server, "tethercraft-ctrl", &hex::encode(expected))?
+        }
+        None => session::dial(addr, std::time::Duration::from_secs(10))?,
+    };
     let mut sess = SessionStream::new(stream)?;
     let auth = session::controller_handshake(
         &mut sess,

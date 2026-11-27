@@ -17,6 +17,10 @@ struct Cli {
     /// Never pass a password on the command line; it would land in history.
     #[arg(long, global = true)]
     password_file: Option<String>,
+    /// Rendezvous server for relayed sessions (arbitrary targets behind NAT).
+    /// When set, controller verbs dial through this server instead of direct.
+    #[arg(long, global = true)]
+    via: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -622,11 +626,29 @@ impl LiveSession {
 
 /// Dial, handshake, enforce the pinned key (or record it loudly on first
 /// contact), and hand back a ready session. Every live verb goes through here.
-fn live_session(peer: &str, password: &[u8]) -> Result<LiveSession, TetherError> {
+/// If `via` is set, dial through the rendezvous relay instead of direct.
+fn live_session(
+    peer: &str,
+    password: &[u8],
+    via: Option<&str>,
+) -> Result<LiveSession, TetherError> {
     let (addr, expected) = peer_addr_key(peer)?;
     let had_pin = expected.is_some();
     let signing = tethercraft_net::generate_device_key()?;
-    let stream = tethercraft_net::session::dial(&addr, std::time::Duration::from_secs(10))?;
+    let stream = match via {
+        Some(server) => {
+            let expected =
+                expected.ok_or_else(|| TetherError::Invalid(format!(
+                    "relay needs a known host key for {peer}: connect directly first (or pin the key)"
+                )))?;
+            tethercraft_net::session::relay_connect(
+                server,
+                "tethercraft-cli",
+                &hex::encode(expected),
+            )?
+        }
+        None => tethercraft_net::session::dial(&addr, std::time::Duration::from_secs(10))?,
+    };
     let mut sess = tethercraft_net::session::SessionStream::new(stream)?;
     let auth = tethercraft_net::session::controller_handshake(
         &mut sess,
@@ -721,7 +743,11 @@ fn run() -> Result<(), TetherError> {
             match headless {
                 Some(out) => {
                     let got = tethercraft_net::session::run_headless_controller_pinned(
-                        &addr, &password, &out, expected,
+                        &addr,
+                        &password,
+                        &out,
+                        expected,
+                        cli.via.as_deref(),
                     )
                     .map_err(|e| TetherError::Invalid(format!("connect: {e}")))?;
                     if !had_pin {
@@ -734,8 +760,13 @@ fn run() -> Result<(), TetherError> {
                     Ok(())
                 }
                 None => {
-                    let (live, key) =
-                        ui::connect_live_pinned(&addr, &password, view_only, expected)?;
+                    let (live, key) = ui::connect_live_pinned(
+                        &addr,
+                        &password,
+                        view_only,
+                        expected,
+                        cli.via.as_deref(),
+                    )?;
                     if !had_pin {
                         tofu_record(&peer, &key)?;
                         eprintln!(
@@ -748,7 +779,7 @@ fn run() -> Result<(), TetherError> {
         }
         Cmd::Screenshot { peer, out } => {
             let password = load_password(cli.password_file.as_deref())?;
-            let mut live = live_session(&peer, &password)?;
+            let mut live = live_session(&peer, &password, cli.via.as_deref())?;
             let mut dec = tethercraft_net::session::StreamDecoder::new()
                 .map_err(|e| TetherError::Invalid(format!("decoder: {e}")))?;
             let (w, h, rgba) = tethercraft_net::rpc::screenshot(&mut live.sess, &mut dec)?;
@@ -836,7 +867,7 @@ fn run() -> Result<(), TetherError> {
         Cmd::Files { op } => match op {
             FilesOp::Ls { peer, path } => {
                 let password = load_password(cli.password_file.as_deref())?;
-                let mut live = live_session(&peer, &password)?;
+                let mut live = live_session(&peer, &password, cli.via.as_deref())?;
                 let req = live.next_req();
                 let entries = tethercraft_net::rpc::file_list(&mut live.sess, req, &path)?;
                 let r = live.finish();
@@ -859,7 +890,7 @@ fn run() -> Result<(), TetherError> {
                     return Err(TetherError::Invalid("local path required".to_string()));
                 }
                 let password = load_password(cli.password_file.as_deref())?;
-                let mut live = live_session(&peer, &password)?;
+                let mut live = live_session(&peer, &password, cli.via.as_deref())?;
                 let req = live.next_req();
                 let data = tethercraft_net::rpc::file_get(&mut live.sess, req, &remote)?;
                 if let Some(parent) = std::path::Path::new(&local).parent() {
@@ -886,7 +917,7 @@ fn run() -> Result<(), TetherError> {
                 let data = std::fs::read(&local)
                     .map_err(|e| TetherError::Invalid(format!("local read: {e}")))?;
                 let password = load_password(cli.password_file.as_deref())?;
-                let mut live = live_session(&peer, &password)?;
+                let mut live = live_session(&peer, &password, cli.via.as_deref())?;
                 let req = live.next_req();
                 tethercraft_net::rpc::file_put(&mut live.sess, req, &remote, &data)?;
                 let r = live.finish();
@@ -899,7 +930,7 @@ fn run() -> Result<(), TetherError> {
             }
             FilesOp::Mv { peer, from, to } => {
                 let password = load_password(cli.password_file.as_deref())?;
-                let mut live = live_session(&peer, &password)?;
+                let mut live = live_session(&peer, &password, cli.via.as_deref())?;
                 let req = live.next_req();
                 tethercraft_net::rpc::file_rename(&mut live.sess, req, &from, &to)?;
                 let r = live.finish();
@@ -912,7 +943,7 @@ fn run() -> Result<(), TetherError> {
             }
             FilesOp::Rm { peer, path } => {
                 let password = load_password(cli.password_file.as_deref())?;
-                let mut live = live_session(&peer, &password)?;
+                let mut live = live_session(&peer, &password, cli.via.as_deref())?;
                 let req = live.next_req();
                 tethercraft_net::rpc::file_simple(
                     &mut live.sess,
@@ -930,7 +961,7 @@ fn run() -> Result<(), TetherError> {
             }
             FilesOp::Mkdir { peer, path } => {
                 let password = load_password(cli.password_file.as_deref())?;
-                let mut live = live_session(&peer, &password)?;
+                let mut live = live_session(&peer, &password, cli.via.as_deref())?;
                 let req = live.next_req();
                 tethercraft_net::rpc::file_simple(
                     &mut live.sess,
@@ -959,7 +990,7 @@ fn run() -> Result<(), TetherError> {
         } => {
             sync_preflight(delete, confirm)?;
             let password = load_password(cli.password_file.as_deref())?;
-            let mut live = live_session(&peer, &password)?;
+            let mut live = live_session(&peer, &password, cli.via.as_deref())?;
             let root = std::path::Path::new(&local);
             let scanned = tethercraft_host::sync::scan_local(root)?;
             let mut req_id = 0u64;
@@ -1063,7 +1094,7 @@ fn run() -> Result<(), TetherError> {
             let password = load_password(cli.password_file.as_deref())?;
             let mut done = 0usize;
             for name in &names {
-                let mut live = live_session(name, &password)?;
+                let mut live = live_session(name, &password, cli.via.as_deref())?;
                 let req = live.next_req();
                 tethercraft_net::rpc::file_put(&mut live.sess, req, &remote, &data)?;
                 live.finish()?;
@@ -1098,7 +1129,7 @@ fn run() -> Result<(), TetherError> {
             let mut files = 0usize;
             let mut bytes = 0u64;
             for name in &names {
-                let mut live = live_session(name, &password)?;
+                let mut live = live_session(name, &password, cli.via.as_deref())?;
                 let mut req_id = 0u64;
                 let tree = remote_tree(&mut live.sess, &mut req_id, &remote_dir)?;
                 for f in &tree {
@@ -1146,7 +1177,7 @@ fn run() -> Result<(), TetherError> {
                 .and_then(|v| v.as_array())
                 .ok_or_else(|| TetherError::Invalid("manifest needs an ops array".to_string()))?;
             let password = load_password(cli.password_file.as_deref())?;
-            let mut live = live_session(peer, &password)?;
+            let mut live = live_session(peer, &password, cli.via.as_deref())?;
             let mut ran = 0usize;
             let mut results: Vec<serde_json::Value> = Vec::new();
             for op in ops {
@@ -1218,7 +1249,7 @@ fn run() -> Result<(), TetherError> {
         }
         Cmd::Restart { peer } => {
             let password = load_password(cli.password_file.as_deref())?;
-            let mut live = live_session(&peer, &password)?;
+            let mut live = live_session(&peer, &password, cli.via.as_deref())?;
             let req = live.next_req();
             tethercraft_net::rpc::power(
                 &mut live.sess,
@@ -1236,7 +1267,7 @@ fn run() -> Result<(), TetherError> {
         }
         Cmd::Shutdown { peer } => {
             let password = load_password(cli.password_file.as_deref())?;
-            let mut live = live_session(&peer, &password)?;
+            let mut live = live_session(&peer, &password, cli.via.as_deref())?;
             let req = live.next_req();
             tethercraft_net::rpc::power(
                 &mut live.sess,
@@ -1254,7 +1285,7 @@ fn run() -> Result<(), TetherError> {
         }
         Cmd::Lock { peer } => {
             let password = load_password(cli.password_file.as_deref())?;
-            let mut live = live_session(&peer, &password)?;
+            let mut live = live_session(&peer, &password, cli.via.as_deref())?;
             let req = live.next_req();
             tethercraft_net::rpc::power(
                 &mut live.sess,
@@ -1271,7 +1302,7 @@ fn run() -> Result<(), TetherError> {
                 return Err(TetherError::Invalid("exec needs a command".to_string()));
             }
             let password = load_password(cli.password_file.as_deref())?;
-            let mut live = live_session(&peer, &password)?;
+            let mut live = live_session(&peer, &password, cli.via.as_deref())?;
             let req = live.next_req();
             let cmdline = command.join(" ");
             let (code, output) = tethercraft_net::rpc::exec(&mut live.sess, req, &cmdline)?;
@@ -1287,12 +1318,12 @@ fn run() -> Result<(), TetherError> {
         Cmd::Tunnel { peer, mapping } => {
             let (port, target) = parse_mapping(&mapping)?;
             let password = load_password(cli.password_file.as_deref())?;
-            let mut live = live_session(&peer, &password)?;
+            let mut live = live_session(&peer, &password, cli.via.as_deref())?;
             tunnel_command(&mut live, port, &target)
         }
         Cmd::Chat { peer, text } => {
             let password = load_password(cli.password_file.as_deref())?;
-            let mut live = live_session(&peer, &password)?;
+            let mut live = live_session(&peer, &password, cli.via.as_deref())?;
             tethercraft_net::rpc::chat_send(&mut live.sess, &text)?;
             let r = live.finish();
             print_out(cli.json, format!("sent to {peer}"), json!({"sent": true}));
@@ -1474,6 +1505,49 @@ fn run() -> Result<(), TetherError> {
                     "codec": codec,
                 }),
             );
+            if let Some(server) = cli.via.as_deref() {
+                eprintln!("awaiting controller via relay {server} as {id}");
+                loop {
+                    match tethercraft_net::session::relay_await(server, &id) {
+                        Ok(stream) => {
+                            match tethercraft_host::serve::serve_stream(
+                                stream, "relay", &cfg, &signing, &store,
+                            ) {
+                                Ok(report) => {
+                                    print_out(
+                                        cli.json,
+                                        format!(
+                                            "session with {p}: frames {f} ({b} bytes), inputs {i}, denied {d}, fallbacks {fb}, ended {e}",
+                                            p = report.peer_id,
+                                            f = report.frames_sent,
+                                            b = report.bytes_sent,
+                                            i = report.inputs_applied,
+                                            d = report.denied_inputs,
+                                            fb = report.codec_fallbacks,
+                                            e = report.ended
+                                        ),
+                                        json!({
+                                            "peer": report.peer_id,
+                                            "frames": report.frames_sent,
+                                            "bytes": report.bytes_sent,
+                                            "inputs": report.inputs_applied,
+                                            "denied": report.denied_inputs,
+                                            "fallbacks": report.codec_fallbacks,
+                                            "codec": report.codec,
+                                            "ended": report.ended,
+                                        }),
+                                    );
+                                }
+                                Err(e) => eprintln!("session error: {e}"),
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("relay wait failed (retrying in 5s): {e}");
+                            std::thread::sleep(std::time::Duration::from_secs(5));
+                        }
+                    }
+                }
+            }
             loop {
                 match tethercraft_host::serve::serve_one(&listener, &cfg, &signing, &store) {
                     Ok(report) => {
@@ -1515,6 +1589,19 @@ fn run() -> Result<(), TetherError> {
             let (addr, expected) = peer_addr_key(&peer)?;
             let had_pin = expected.is_some();
             let password = load_password(cli.password_file.as_deref())?;
+            let via_target;
+            let via = match (cli.via.as_deref(), expected) {
+                (Some(server), Some(key)) => {
+                    via_target = hex::encode(key);
+                    Some((server, via_target.as_str()))
+                }
+                (Some(_), None) => {
+                    return Err(TetherError::Invalid(format!(
+                        "relay needs a known host key for {peer}: connect directly first (or pin the key)"
+                    )));
+                }
+                (None, _) => None,
+            };
             let (saved, key) = tethercraft_net::session::run_headless_controller_count(
                 &addr,
                 &password,
@@ -1522,6 +1609,7 @@ fn run() -> Result<(), TetherError> {
                 out.as_deref(),
                 input_probe,
                 expected,
+                via,
             )?;
             if !had_pin {
                 tofu_record(&peer, &key)?;
