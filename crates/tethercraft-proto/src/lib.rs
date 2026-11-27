@@ -35,6 +35,19 @@ pub enum MessageKind {
     FilePut,
     FileChunk,
     FileDone,
+    FileMv,
+    FileMkdir,
+    FileRm,
+    FileHash,
+    FileHashResp,
+    FileListResp,
+    FileBlock,
+    ExecDone,
+    Restart,
+    Shutdown,
+    Lock,
+    PowerAck,
+    TunnelAck,
     ChatMsg,
     NoteSet,
     TermOpen,
@@ -127,6 +140,125 @@ pub fn validate_transfer_path(path: &str) -> Result<(), TetherError> {
     Ok(())
 }
 
+/// Request payloads: every file/exec/power request carries a client-chosen
+/// request id so responses can be matched on a multiplexed session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileReq {
+    pub req_id: u64,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilePutReq {
+    pub req_id: u64,
+    pub path: String,
+    pub total: u64,
+}
+
+/// One chunk of a file in either direction. `eof` on an empty payload ends
+/// the transfer; the receiver acks with `FileDone`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileBlock {
+    pub req_id: u64,
+    pub offset: u64,
+    pub data_hex: String,
+    pub eof: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+    /// Last-modified time, unix seconds. Zero when the platform withholds it.
+    pub mtime: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileHashReq {
+    pub req_id: u64,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileHashResp {
+    pub req_id: u64,
+    pub hash_hex: String,
+    pub size: u64,
+    pub mtime: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileListResp {
+    pub req_id: u64,
+    pub entries: Vec<DirEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileDoneAck {
+    pub req_id: u64,
+    pub ok: bool,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecReq {
+    pub req_id: u64,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecDone {
+    pub req_id: u64,
+    pub exit_code: i32,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PowerReq {
+    pub req_id: u64,
+    pub delay_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PowerAck {
+    pub req_id: u64,
+    pub ok: bool,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TunnelOpen {
+    pub channel: u32,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TunnelBlock {
+    pub channel: u32,
+    pub data_hex: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TunnelClose {
+    pub channel: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TunnelAck {
+    pub channel: u32,
+    pub ok: bool,
+    pub error: String,
+}
+
+/// Biggest single file block on the wire (60 KiB hex-encoded stays far below
+/// the 8 MiB envelope cap).
+pub const FILE_BLOCK_BYTES: usize = 60 * 1024;
+/// Biggest single file transfer accepted in memory (8 MiB).
+pub const MAX_TRANSFER_BYTES: u64 = 8 * 1024 * 1024;
+/// Biggest exec output tail returned (64 KiB).
+pub const MAX_EXEC_OUTPUT: usize = 64 * 1024;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +321,17 @@ mod tests {
             MessageKind::FilePut,
             MessageKind::FileChunk,
             MessageKind::FileDone,
+            MessageKind::FileMv,
+            MessageKind::FileMkdir,
+            MessageKind::FileRm,
+            MessageKind::FileListResp,
+            MessageKind::FileBlock,
+            MessageKind::ExecDone,
+            MessageKind::Restart,
+            MessageKind::Shutdown,
+            MessageKind::Lock,
+            MessageKind::PowerAck,
+            MessageKind::TunnelAck,
             MessageKind::ChatMsg,
             MessageKind::NoteSet,
             MessageKind::TermOpen,

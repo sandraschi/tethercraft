@@ -1,5 +1,6 @@
 //! Device keys (Ed25519), fingerprint words, SPAKE2 PAKE, pinned-key transport config.
 
+pub mod rpc;
 pub mod sealed;
 pub mod session;
 pub mod update;

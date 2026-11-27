@@ -4,6 +4,7 @@ pub mod agent;
 pub mod camera;
 pub mod files;
 pub mod inject;
+pub mod ops;
 pub mod printer;
 pub mod privacy;
 pub mod serve;
@@ -31,6 +32,11 @@ fn permission_for_kind(kind: MessageKind) -> Option<Permission> {
         | MessageKind::FilePut
         | MessageKind::FileChunk
         | MessageKind::FileDone
+        | MessageKind::FileMv
+        | MessageKind::FileMkdir
+        | MessageKind::FileRm
+        | MessageKind::FileHash
+        | MessageKind::FileHashResp
         | MessageKind::SyncPlan
         | MessageKind::SyncChunk => Some(Permission::File),
         MessageKind::TermOpen
@@ -42,8 +48,16 @@ fn permission_for_kind(kind: MessageKind) -> Option<Permission> {
         }
         MessageKind::AudioFrame => Some(Permission::Audio),
         MessageKind::PrivacyRequest | MessageKind::PrivacyEnd => Some(Permission::Privacy),
+        MessageKind::Restart | MessageKind::Shutdown | MessageKind::Lock => {
+            Some(Permission::Restart)
+        }
         MessageKind::Frame
         | MessageKind::FrameH264
+        | MessageKind::FileListResp
+        | MessageKind::FileBlock
+        | MessageKind::ExecDone
+        | MessageKind::PowerAck
+        | MessageKind::TunnelAck
         | MessageKind::ChatMsg
         | MessageKind::NoteSet
         | MessageKind::SessionStart
@@ -265,6 +279,10 @@ mod tests {
         assert!(h.authorize("s1", MessageKind::AudioFrame, now).is_err());
         assert!(h.authorize("s1", MessageKind::PrivacyRequest, now).is_err());
         assert!(h.authorize("s1", MessageKind::TouchTap, now).is_err());
+        assert!(h.authorize("s1", MessageKind::FileGet, now).is_err());
+        assert!(h.authorize("s1", MessageKind::ExecRequest, now).is_err());
+        assert!(h.authorize("s1", MessageKind::Restart, now).is_err());
+        assert!(h.authorize("s1", MessageKind::TunnelOpen, now).is_err());
         assert!(h.authorize("s1", MessageKind::OtpProof, now).is_ok());
     }
 

@@ -26,5 +26,8 @@ tethercraft-host = { path = "../tethercraft-host" }
 tethercraft-input = { path = "../tethercraft-input" }
 tethercraft-server = { path = "../tethercraft-server" }
 
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
+
 [lints]
 workspace = true

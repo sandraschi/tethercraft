@@ -13,6 +13,10 @@ mod ui;
 struct Cli {
     #[arg(long, global = true, default_value_t = false)]
     json: bool,
+    /// Password file for session verbs (connect, serve, files, exec, ...).
+    /// Never pass a password on the command line; it would land in history.
+    #[arg(long, global = true)]
+    password_file: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -29,8 +33,6 @@ enum Cmd {
         peer: String,
         #[arg(long, default_value_t = false)]
         view_only: bool,
-        #[arg(long)]
-        password_file: Option<String>,
         #[arg(long)]
         headless: Option<String>,
     },
@@ -99,6 +101,10 @@ enum Cmd {
         peer: String,
         mapping: String,
     },
+    Chat {
+        peer: String,
+        text: String,
+    },
     Recordings {
         #[command(subcommand)]
         op: RecordOp,
@@ -120,8 +126,6 @@ enum Cmd {
         #[arg(long, default_value_t = 21120)]
         port: u16,
         #[arg(long)]
-        password_file: Option<String>,
-        #[arg(long)]
         grants: Option<String>,
         #[arg(long, default_value_t = 10)]
         fps: u8,
@@ -133,11 +137,11 @@ enum Cmd {
         pin_key: Option<String>,
         #[arg(long)]
         identity_file: Option<String>,
+        #[arg(long)]
+        share: Option<String>,
     },
     Serve {
         peer: String,
-        #[arg(long)]
-        password_file: Option<String>,
         #[arg(long, default_value_t = false)]
         view_only: bool,
         #[arg(long)]
@@ -251,6 +255,71 @@ fn parse_mapping(s: &str) -> Result<(u16, String), TetherError> {
 }
 
 /// Sync preflight: deletes need `--delete` plus `--confirm`, like the host apply path.
+/// Monotonic request ids, starting at 1 (zero means "unset" on the wire).
+fn next_req(r: &mut u64) -> u64 {
+    *r = r.wrapping_add(1);
+    if *r == 0 {
+        *r = 1;
+    }
+    *r
+}
+
+/// Recursively list + hash a remote tree through one session. Directories
+/// recurse; every file gets a SHA-256 so the sync planner diffs content,
+/// not just names.
+fn remote_tree(
+    sess: &mut tethercraft_net::session::SessionStream,
+    req: &mut u64,
+    remote_root: &str,
+) -> Result<Vec<tethercraft_host::sync::FileMeta>, TetherError> {
+    let mut out = Vec::new();
+    let mut dirs = vec![remote_root.trim_end_matches('/').to_string()];
+    if dirs[0].is_empty() {
+        dirs[0] = ".".to_string();
+    }
+    while let Some(dir) = dirs.pop() {
+        let entries = tethercraft_net::rpc::file_list(sess, next_req(req), &dir)?;
+        for e in entries {
+            let rel = if dir == "." {
+                e.name.clone()
+            } else {
+                format!("{}/{}", dir.trim_start_matches("./"), e.name)
+            };
+            let rel = rel.trim_start_matches('/').to_string();
+            if e.is_dir {
+                dirs.push(rel);
+            } else {
+                let (hash, size, mtime) =
+                    tethercraft_net::rpc::file_hash(sess, next_req(req), &rel)?;
+                out.push(tethercraft_host::sync::FileMeta {
+                    rel,
+                    size,
+                    hash,
+                    mtime: mtime as i64,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.rel.cmp(&b.rel));
+    Ok(out)
+}
+
+fn sync_direction(direction: SyncDirection) -> tethercraft_host::sync::Direction {
+    match direction {
+        SyncDirection::Push => tethercraft_host::sync::Direction::Push,
+        SyncDirection::Pull => tethercraft_host::sync::Direction::Pull,
+        SyncDirection::Both => tethercraft_host::sync::Direction::Both,
+    }
+}
+
+fn sync_conflict(conflict: SyncConflict) -> tethercraft_host::sync::Conflict {
+    match conflict {
+        SyncConflict::Newer => tethercraft_host::sync::Conflict::Newer,
+        SyncConflict::KeepBoth => tethercraft_host::sync::Conflict::KeepBoth,
+        SyncConflict::Ask => tethercraft_host::sync::Conflict::Ask,
+    }
+}
+
 fn sync_preflight(delete: bool, confirm: bool) -> Result<(), TetherError> {
     if delete && !confirm {
         return Err(TetherError::Denied(
@@ -260,25 +329,6 @@ fn sync_preflight(delete: bool, confirm: bool) -> Result<(), TetherError> {
     Ok(())
 }
 
-fn known_peer(peer: &str) -> Result<(), TetherError> {
-    if peer.is_empty() {
-        return Err(TetherError::Invalid("empty peer".to_string()));
-    }
-    let s = open_store()?;
-    let peers = s.list_peers()?;
-    if peers.iter().all(|r| r.peer_id != peer) {
-        return Err(TetherError::Invalid(format!("unknown peer {peer}")));
-    }
-    Ok(())
-}
-
-fn live_only(what: &str) -> Result<(), TetherError> {
-    Err(TetherError::NotImplemented(format!(
-        "{what} needs a live session (Tier 2 host service)"
-    )))
-}
-
-/// Read a password from a file (or stdin with `-`). Never from argv, never logged.
 fn load_password(path: Option<&str>) -> Result<Vec<u8>, TetherError> {
     match path {
         Some("-") => {
@@ -393,12 +443,207 @@ fn peer_addr_key(peer: &str) -> Result<(String, Option<[u8; 32]>), TetherError> 
     }
 }
 
+/// Run one TCP tunnel: listen locally, bridge every inbound connection to
+/// `target` through the live session on its own channel. Runs until Ctrl+C
+/// or the session ends. Ctrl+C is the documented stop: closing the listener
+/// drops every channel, and the host cleans up its ends.
+fn tunnel_command(
+    live: &mut LiveSession,
+    local_port: u16,
+    target: &str,
+) -> Result<(), TetherError> {
+    use std::sync::mpsc;
+    let listener = std::net::TcpListener::bind(format!("127.0.0.1:{local_port}"))
+        .map_err(|e| TetherError::Invalid(format!("tunnel listen: {e}")))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| TetherError::Invalid(format!("tunnel listen: {e}")))?;
+    println!("tunnel up: 127.0.0.1:{local_port} -> {target} (Ctrl+C to stop)");
+    // channel id -> writer to the local socket
+    let mut channels: std::collections::HashMap<u32, mpsc::Sender<Vec<u8>>> =
+        std::collections::HashMap::new();
+    let mut next_channel: u32 = 1;
+    // (channel, bytes) arriving from the host side.
+    let (tun_tx, tun_rx) = mpsc::channel::<(u32, Vec<u8>)>();
+    // reader threads, one per accepted connection
+    let mut readers: Vec<std::thread::JoinHandle<()>> = Vec::new();
+    loop {
+        // 1. Accept new local connections (nonblocking).
+        match listener.accept() {
+            Ok((stream, _)) => {
+                if channels.len() >= 16 {
+                    drop(stream);
+                    eprintln!("tunnel: too many channels (max 16), refused one");
+                    continue;
+                }
+                let channel = next_channel;
+                next_channel = next_channel.wrapping_add(1).max(1);
+                if let Err(e) = tethercraft_net::rpc::tunnel_open(&mut live.sess, channel, target) {
+                    eprintln!("tunnel: host refused channel {channel}: {e}");
+                    continue;
+                }
+                let (to_local_tx, to_local_rx) = mpsc::channel::<Vec<u8>>();
+                channels.insert(channel, to_local_tx);
+                let tun_tx = tun_tx.clone();
+                readers.push(std::thread::spawn(move || {
+                    use std::io::Read;
+                    let mut s = match stream.try_clone() {
+                        Ok(s) => s,
+                        Err(_) => {
+                            let _ = tun_tx.send((channel, Vec::new()));
+                            return;
+                        }
+                    };
+                    let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(60)));
+                    let mut w = match stream.try_clone() {
+                        Ok(s) => s,
+                        Err(_) => {
+                            let _ = tun_tx.send((channel, Vec::new()));
+                            return;
+                        }
+                    };
+                    let mut buf = vec![0u8; 60 * 1024];
+                    // Writer half: controller -> host direction for this channel.
+                    // (Detached on purpose: it ends when the socket or the
+                    // channel closes.)
+                    std::thread::spawn(move || {
+                        use std::io::Write;
+                        for chunk in to_local_rx {
+                            if w.write_all(&chunk).is_err() || w.flush().is_err() {
+                                break;
+                            }
+                        }
+                    });
+                    // Reader half: host -> controller.
+                    loop {
+                        match s.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                if tun_tx.send((channel, buf[..n].to_vec())).is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let _ = tun_tx.send((channel, Vec::new()));
+                }));
+                println!("tunnel: channel {channel} open");
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(TetherError::Invalid(format!("tunnel accept: {e}"))),
+        }
+        // 2. Pump one session message (frames dropped, tunnel data forwarded).
+        match live
+            .sess
+            .recv_envelope_wait(std::time::Duration::from_millis(50))
+        {
+            Err(_) => continue,
+            Ok(None) => {}
+            Ok(Some(env)) => match env.kind {
+                tethercraft_proto::MessageKind::SessionEnd => {
+                    println!("tunnel: host ended the session");
+                    break;
+                }
+                tethercraft_proto::MessageKind::TunnelData => {
+                    if let Ok(block) = tethercraft_net::session::parse_json::<
+                        tethercraft_proto::TunnelBlock,
+                    >(&env.payload)
+                    {
+                        let bytes = hex::decode(&block.data_hex).unwrap_or_default();
+                        if let Some(tx) = channels.get(&block.channel) {
+                            if tx.send(bytes).is_err() {
+                                channels.remove(&block.channel);
+                            }
+                        }
+                    }
+                }
+                tethercraft_proto::MessageKind::TunnelClose => {
+                    if let Ok(c) = tethercraft_net::session::parse_json::<
+                        tethercraft_proto::TunnelClose,
+                    >(&env.payload)
+                    {
+                        channels.remove(&c.channel);
+                        println!("tunnel: channel {} closed by host", c.channel);
+                    }
+                }
+                _ => {}
+            },
+        }
+        // 3. Forward host-bound bytes that arrived on reader threads.
+        while let Ok((channel, bytes)) = tun_rx.try_recv() {
+            if bytes.is_empty() {
+                channels.remove(&channel);
+                let _ = tethercraft_net::rpc::tunnel_close(&mut live.sess, channel);
+                continue;
+            }
+            // Chunk already 60 KiB-bounded by the reader.
+            if tethercraft_net::rpc::tunnel_send(&mut live.sess, channel, &bytes).is_err() {
+                channels.remove(&channel);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Record the host key on first contact (TOFU). Prints the words loudly: the
 /// human verifies them out of band, same as the SSH first-connect ritual.
 fn tofu_record(peer: &str, key: &[u8; 32]) -> Result<(), TetherError> {
     let s = open_store()?;
     s.set_pubkey(peer, &hex::encode(key))?;
     Ok(())
+}
+
+/// An authenticated session plus TOFU bookkeeping. One session per command;
+/// the controller never multiplexes unrelated verbs.
+struct LiveSession {
+    sess: tethercraft_net::session::SessionStream,
+    req: u64,
+}
+
+impl LiveSession {
+    fn next_req(&mut self) -> u64 {
+        self.req = self.req.wrapping_add(1);
+        if self.req == 0 {
+            self.req = 1;
+        }
+        self.req
+    }
+
+    fn finish(mut self) -> Result<(), TetherError> {
+        let end = tethercraft_proto::Envelope::new(
+            tethercraft_proto::MessageKind::SessionEnd,
+            [0u8; 32],
+            Vec::new(),
+        );
+        let _ = self.sess.send_envelope(&end);
+        Ok(())
+    }
+}
+
+/// Dial, handshake, enforce the pinned key (or record it loudly on first
+/// contact), and hand back a ready session. Every live verb goes through here.
+fn live_session(peer: &str, password: &[u8]) -> Result<LiveSession, TetherError> {
+    let (addr, expected) = peer_addr_key(peer)?;
+    let had_pin = expected.is_some();
+    let signing = tethercraft_net::generate_device_key()?;
+    let stream = tethercraft_net::session::dial(&addr, std::time::Duration::from_secs(10))?;
+    let mut sess = tethercraft_net::session::SessionStream::new(stream)?;
+    let auth = tethercraft_net::session::controller_handshake(
+        &mut sess,
+        "tethercraft-cli",
+        &signing,
+        password,
+        expected,
+    )
+    .map_err(|e| TetherError::Invalid(format!("connect: {e}")))?;
+    sess.set_frame_timeouts()?;
+    if !had_pin {
+        tofu_record(peer, &auth.host_key)?;
+        eprintln!(
+            "recorded new host key for {peer}: VERIFY the words out of band before trusting it"
+        );
+    }
+    Ok(LiveSession { sess, req: 0 })
 }
 
 fn store_path() -> String {
@@ -466,14 +711,13 @@ fn run() -> Result<(), TetherError> {
         Cmd::Connect {
             peer,
             view_only,
-            password_file,
             headless,
         } => {
             let (addr, expected) = peer_addr_key(&peer)?;
             let had_pin = expected.is_some();
             // TOFU flow: dial with the recorded pin when there is one, then
             // record a new key loudly on first contact.
-            let password = load_password(password_file.as_deref())?;
+            let password = load_password(cli.password_file.as_deref())?;
             match headless {
                 Some(out) => {
                     let got = tethercraft_net::session::run_headless_controller_pinned(
@@ -502,9 +746,21 @@ fn run() -> Result<(), TetherError> {
                 }
             }
         }
-        Cmd::Screenshot { peer, out } => Err(TetherError::NotImplemented(format!(
-            "screenshot of {peer} to {out} needs a live session (Tier 1 exit)"
-        ))),
+        Cmd::Screenshot { peer, out } => {
+            let password = load_password(cli.password_file.as_deref())?;
+            let mut live = live_session(&peer, &password)?;
+            let mut dec = tethercraft_net::session::StreamDecoder::new()
+                .map_err(|e| TetherError::Invalid(format!("decoder: {e}")))?;
+            let (w, h, rgba) = tethercraft_net::rpc::screenshot(&mut live.sess, &mut dec)?;
+            tethercraft_net::session::write_ppm(&out, w, h, &rgba)?;
+            let r = live.finish();
+            print_out(
+                cli.json,
+                format!("saved screenshot {out} ({w}x{h})"),
+                json!({"saved": out, "width": w, "height": h}),
+            );
+            r
+        }
         Cmd::Book { op } => match op {
             BookOp::List => {
                 let s = open_store()?;
@@ -579,50 +835,116 @@ fn run() -> Result<(), TetherError> {
         }
         Cmd::Files { op } => match op {
             FilesOp::Ls { peer, path } => {
-                known_peer(&peer)?;
-                tethercraft_proto::validate_transfer_path(&path)?;
-                live_only(&format!("files ls {peer} {path}"))
+                let password = load_password(cli.password_file.as_deref())?;
+                let mut live = live_session(&peer, &password)?;
+                let req = live.next_req();
+                let entries = tethercraft_net::rpc::file_list(&mut live.sess, req, &path)?;
+                let r = live.finish();
+                if cli.json {
+                    println!("{}", json!({"entries": entries}));
+                } else {
+                    for e in &entries {
+                        let kind = if e.is_dir { "dir " } else { "file" };
+                        println!("{kind} {:>10}  {}", e.size, e.name);
+                    }
+                }
+                r
             }
             FilesOp::Get {
                 peer,
                 remote,
                 local,
             } => {
-                known_peer(&peer)?;
-                tethercraft_proto::validate_transfer_path(&remote)?;
                 if local.is_empty() {
                     return Err(TetherError::Invalid("local path required".to_string()));
                 }
-                live_only(&format!("files get {peer} {remote}"))
+                let password = load_password(cli.password_file.as_deref())?;
+                let mut live = live_session(&peer, &password)?;
+                let req = live.next_req();
+                let data = tethercraft_net::rpc::file_get(&mut live.sess, req, &remote)?;
+                if let Some(parent) = std::path::Path::new(&local).parent() {
+                    if !parent.as_os_str().is_empty() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| TetherError::Invalid(format!("local dir: {e}")))?;
+                    }
+                }
+                std::fs::write(&local, &data)
+                    .map_err(|e| TetherError::Invalid(format!("local write: {e}")))?;
+                let r = live.finish();
+                print_out(
+                    cli.json,
+                    format!("got {} ({} bytes)", remote, data.len()),
+                    json!({"saved": local, "bytes": data.len()}),
+                );
+                r
             }
             FilesOp::Put {
                 peer,
                 local,
                 remote,
             } => {
-                known_peer(&peer)?;
-                tethercraft_proto::validate_transfer_path(&remote)?;
-                if std::path::Path::new(&local).exists() {
-                    live_only(&format!("files put {peer} {remote}"))
-                } else {
-                    Err(TetherError::Invalid(format!("local file missing: {local}")))
-                }
+                let data = std::fs::read(&local)
+                    .map_err(|e| TetherError::Invalid(format!("local read: {e}")))?;
+                let password = load_password(cli.password_file.as_deref())?;
+                let mut live = live_session(&peer, &password)?;
+                let req = live.next_req();
+                tethercraft_net::rpc::file_put(&mut live.sess, req, &remote, &data)?;
+                let r = live.finish();
+                print_out(
+                    cli.json,
+                    format!("sent {} ({} bytes)", local, data.len()),
+                    json!({"sent": remote, "bytes": data.len()}),
+                );
+                r
             }
             FilesOp::Mv { peer, from, to } => {
-                known_peer(&peer)?;
-                tethercraft_proto::validate_transfer_path(&from)?;
-                tethercraft_proto::validate_transfer_path(&to)?;
-                live_only(&format!("files mv {peer}"))
+                let password = load_password(cli.password_file.as_deref())?;
+                let mut live = live_session(&peer, &password)?;
+                let req = live.next_req();
+                tethercraft_net::rpc::file_rename(&mut live.sess, req, &from, &to)?;
+                let r = live.finish();
+                print_out(
+                    cli.json,
+                    format!("moved {from} to {to}"),
+                    json!({"moved": true}),
+                );
+                r
             }
             FilesOp::Rm { peer, path } => {
-                known_peer(&peer)?;
-                tethercraft_proto::validate_transfer_path(&path)?;
-                live_only(&format!("files rm {peer} {path}"))
+                let password = load_password(cli.password_file.as_deref())?;
+                let mut live = live_session(&peer, &password)?;
+                let req = live.next_req();
+                tethercraft_net::rpc::file_simple(
+                    &mut live.sess,
+                    req,
+                    tethercraft_proto::MessageKind::FileRm,
+                    &path,
+                )?;
+                let r = live.finish();
+                print_out(
+                    cli.json,
+                    format!("removed {path}"),
+                    json!({"removed": true}),
+                );
+                r
             }
             FilesOp::Mkdir { peer, path } => {
-                known_peer(&peer)?;
-                tethercraft_proto::validate_transfer_path(&path)?;
-                live_only(&format!("files mkdir {peer} {path}"))
+                let password = load_password(cli.password_file.as_deref())?;
+                let mut live = live_session(&peer, &password)?;
+                let req = live.next_req();
+                tethercraft_net::rpc::file_simple(
+                    &mut live.sess,
+                    req,
+                    tethercraft_proto::MessageKind::FileMkdir,
+                    &path,
+                )?;
+                let r = live.finish();
+                print_out(
+                    cli.json,
+                    format!("created {path}"),
+                    json!({"created": true}),
+                );
+                r
             }
         },
         Cmd::Sync {
@@ -635,99 +957,346 @@ fn run() -> Result<(), TetherError> {
             delete,
             confirm,
         } => {
-            known_peer(&peer)?;
             sync_preflight(delete, confirm)?;
-            // Real local scan: the plan-first half of folder sync works today.
+            let password = load_password(cli.password_file.as_deref())?;
+            let mut live = live_session(&peer, &password)?;
             let root = std::path::Path::new(&local);
             let scanned = tethercraft_host::sync::scan_local(root)?;
-            let (dir, conf) = match (direction, conflict) {
-                (SyncDirection::Push, SyncConflict::Newer) => ("push", "newer"),
-                (SyncDirection::Push, SyncConflict::KeepBoth) => ("push", "keep-both"),
-                (SyncDirection::Push, SyncConflict::Ask) => ("push", "ask"),
-                (SyncDirection::Pull, SyncConflict::Newer) => ("pull", "newer"),
-                (SyncDirection::Pull, SyncConflict::KeepBoth) => ("pull", "keep-both"),
-                (SyncDirection::Pull, SyncConflict::Ask) => ("pull", "ask"),
-                (SyncDirection::Both, SyncConflict::Newer) => ("both", "newer"),
-                (SyncDirection::Both, SyncConflict::KeepBoth) => ("both", "keep-both"),
-                (SyncDirection::Both, SyncConflict::Ask) => ("both", "ask"),
+            let mut req_id = 0u64;
+            let remote_root = remote.trim_end_matches('/');
+            let remote_root = if remote_root.is_empty() {
+                "."
+            } else {
+                remote_root
             };
+            let remote_files = remote_tree(&mut live.sess, &mut req_id, remote_root)?;
+            let plan = tethercraft_host::sync::plan(
+                &scanned,
+                &remote_files,
+                sync_direction(direction),
+                sync_conflict(conflict),
+                delete,
+            );
+            let summary = plan.summary();
+            if dry_run || !plan.needs_answer.is_empty() {
+                let r = live.finish();
+                print_out(
+                    cli.json,
+                    format!("sync plan (dry run): {summary}"),
+                    json!({"plan": summary, "dry_run": true, "needs_answer": plan.needs_answer.len()}),
+                );
+                if !plan.needs_answer.is_empty() {
+                    return Err(TetherError::Denied(
+                        "sync needs answers first: re-run with --conflict newer or keep-both"
+                            .to_string(),
+                    ));
+                }
+                return r;
+            }
+            let mut pushed = 0usize;
+            for f in &plan.to_push {
+                let path = root.join(&f.rel);
+                let data = std::fs::read(&path)
+                    .map_err(|e| TetherError::Invalid(format!("local read: {e}")))?;
+                let remote_path = format!("{remote_root}/{p}", p = f.rel.trim_start_matches('/'));
+                let req = next_req(&mut req_id);
+                tethercraft_net::rpc::file_put(&mut live.sess, req, &remote_path, &data)?;
+                pushed += 1;
+            }
+            let mut pulled = 0usize;
+            for f in &plan.to_pull {
+                let req = next_req(&mut req_id);
+                let data = tethercraft_net::rpc::file_get(&mut live.sess, req, &f.rel)?;
+                let path = root.join(&f.rel);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| TetherError::Invalid(format!("local dir: {e}")))?;
+                }
+                std::fs::write(&path, &data)
+                    .map_err(|e| TetherError::Invalid(format!("local write: {e}")))?;
+                pulled += 1;
+            }
+            let mut deleted = 0usize;
+            for rel in plan.delete_local.iter().chain(plan.delete_remote.iter()) {
+                if plan.delete_local.contains(rel) {
+                    let path = root.join(rel);
+                    if path.is_file() {
+                        std::fs::remove_file(&path)
+                            .map_err(|e| TetherError::Invalid(format!("local delete: {e}")))?;
+                        deleted += 1;
+                    }
+                } else {
+                    tethercraft_net::rpc::file_simple(
+                        &mut live.sess,
+                        next_req(&mut req_id),
+                        tethercraft_proto::MessageKind::FileRm,
+                        rel,
+                    )?;
+                    deleted += 1;
+                }
+            }
+            let r = live.finish();
             print_out(
                 cli.json,
-                format!(
-                    "sync plan: {n} local files scanned (direction {dir}, conflict {conf})",
-                    n = scanned.len()
-                ),
-                json!({"scanned": scanned.len(), "direction": dir, "conflict": conf, "dry_run": dry_run}),
+                format!("synced: pushed {pushed}, pulled {pulled}, deleted {deleted} ({summary})"),
+                json!({"pushed": pushed, "pulled": pulled, "deleted": deleted, "plan": summary}),
             );
-            live_only(&format!("files sync {peer} {local} {remote}"))
+            r
         }
         Cmd::BroadcastFile {
             peers,
             local,
             remote,
         } => {
-            if peers.split(',').any(|p| p.trim().is_empty()) {
+            let names: Vec<&str> = peers
+                .split(',')
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .collect();
+            if names.is_empty() {
                 return Err(TetherError::Invalid(
                     "peers must be comma-separated ids".to_string(),
                 ));
             }
-            tethercraft_proto::validate_transfer_path(&remote)?;
-            if !std::path::Path::new(&local).exists() {
-                return Err(TetherError::Invalid(format!("local file missing: {local}")));
+            let data = std::fs::read(&local)
+                .map_err(|e| TetherError::Invalid(format!("local read: {e}")))?;
+            let password = load_password(cli.password_file.as_deref())?;
+            let mut done = 0usize;
+            for name in &names {
+                let mut live = live_session(name, &password)?;
+                let req = live.next_req();
+                tethercraft_net::rpc::file_put(&mut live.sess, req, &remote, &data)?;
+                live.finish()?;
+                done += 1;
             }
-            live_only("broadcast-file")
+            print_out(
+                cli.json,
+                format!("broadcast {local} to {done} peers"),
+                json!({"peers": done, "bytes": data.len()}),
+            );
+            Ok(())
         }
         Cmd::CollectFiles {
             peers,
             remote_dir,
             local_dir,
         } => {
-            if peers.split(',').any(|p| p.trim().is_empty()) {
+            let names: Vec<&str> = peers
+                .split(',')
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .collect();
+            if names.is_empty() {
                 return Err(TetherError::Invalid(
                     "peers must be comma-separated ids".to_string(),
                 ));
             }
-            tethercraft_proto::validate_transfer_path(&remote_dir)?;
             if local_dir.is_empty() {
                 return Err(TetherError::Invalid("local dir required".to_string()));
             }
-            live_only("collect-files")
+            let password = load_password(cli.password_file.as_deref())?;
+            let mut files = 0usize;
+            let mut bytes = 0u64;
+            for name in &names {
+                let mut live = live_session(name, &password)?;
+                let mut req_id = 0u64;
+                let tree = remote_tree(&mut live.sess, &mut req_id, &remote_dir)?;
+                for f in &tree {
+                    let data = tethercraft_net::rpc::file_get(
+                        &mut live.sess,
+                        next_req(&mut req_id),
+                        &f.rel,
+                    )?;
+                    let rel = f
+                        .rel
+                        .trim_start_matches(&remote_dir.trim_end_matches('/').to_string()[..]);
+                    let rel = rel.trim_start_matches('/');
+                    let dest = std::path::Path::new(&local_dir).join(name).join(rel);
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| TetherError::Invalid(format!("local dir: {e}")))?;
+                    }
+                    bytes += data.len() as u64;
+                    std::fs::write(&dest, &data)
+                        .map_err(|e| TetherError::Invalid(format!("local write: {e}")))?;
+                    files += 1;
+                }
+                live.finish()?;
+            }
+            print_out(
+                cli.json,
+                format!(
+                    "collected {files} files ({bytes} bytes) from {} peers",
+                    names.len()
+                ),
+                json!({"files": files, "bytes": bytes}),
+            );
+            Ok(())
         }
         Cmd::Batch { manifest } => {
             let text = std::fs::read_to_string(&manifest)
                 .map_err(|e| TetherError::Invalid(format!("manifest unreadable: {e}")))?;
             let value: serde_json::Value = serde_json::from_str(&text)
                 .map_err(|e| TetherError::Invalid(format!("manifest not JSON: {e}")))?;
-            if value.get("ops").is_none() {
-                return Err(TetherError::Invalid(
-                    "manifest needs an ops array".to_string(),
-                ));
+            let peer = value.get("peer").and_then(|v| v.as_str()).ok_or_else(|| {
+                TetherError::Invalid("manifest needs a string field \"peer\"".to_string())
+            })?;
+            let ops = value
+                .get("ops")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| TetherError::Invalid("manifest needs an ops array".to_string()))?;
+            let password = load_password(cli.password_file.as_deref())?;
+            let mut live = live_session(peer, &password)?;
+            let mut ran = 0usize;
+            let mut results: Vec<serde_json::Value> = Vec::new();
+            for op in ops {
+                let name = op.get("op").and_then(|v| v.as_str()).unwrap_or("");
+                match name {
+                    "exec" => {
+                        let command = op.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                        if command.is_empty() {
+                            return Err(TetherError::Invalid(
+                                "batch exec needs a command".to_string(),
+                            ));
+                        }
+                        let req = live.next_req();
+                        let (code, out) = tethercraft_net::rpc::exec(&mut live.sess, req, command)?;
+                        results.push(json!({"op": "exec", "exit": code, "output": out}));
+                        ran += 1;
+                    }
+                    "put" => {
+                        let local = op.get("local").and_then(|v| v.as_str()).unwrap_or("");
+                        let remote = op.get("remote").and_then(|v| v.as_str()).unwrap_or("");
+                        let data = std::fs::read(local)
+                            .map_err(|e| TetherError::Invalid(format!("local read: {e}")))?;
+                        let req = live.next_req();
+                        tethercraft_net::rpc::file_put(&mut live.sess, req, remote, &data)?;
+                        results.push(json!({"op": "put", "remote": remote, "bytes": data.len()}));
+                        ran += 1;
+                    }
+                    "get" => {
+                        let remote = op.get("remote").and_then(|v| v.as_str()).unwrap_or("");
+                        let local = op.get("local").and_then(|v| v.as_str()).unwrap_or("");
+                        if local.is_empty() {
+                            return Err(TetherError::Invalid(
+                                "batch get needs local + remote".to_string(),
+                            ));
+                        }
+                        let req = live.next_req();
+                        let data = tethercraft_net::rpc::file_get(&mut live.sess, req, remote)?;
+                        if let Some(parent) = std::path::Path::new(local).parent() {
+                            if !parent.as_os_str().is_empty() {
+                                std::fs::create_dir_all(parent)
+                                    .map_err(|e| TetherError::Invalid(format!("local dir: {e}")))?;
+                            }
+                        }
+                        std::fs::write(local, &data)
+                            .map_err(|e| TetherError::Invalid(format!("local write: {e}")))?;
+                        results.push(json!({"op": "get", "remote": remote, "bytes": data.len()}));
+                        ran += 1;
+                    }
+                    "chat" => {
+                        let text = op.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                        tethercraft_net::rpc::chat_send(&mut live.sess, text)?;
+                        results.push(json!({"op": "chat", "sent": true}));
+                        ran += 1;
+                    }
+                    other => {
+                        return Err(TetherError::Invalid(format!(
+                            "unknown batch op: {other} (want exec, put, get, chat)"
+                        )));
+                    }
+                }
             }
-            live_only("batch manifest")
+            let r = live.finish();
+            print_out(
+                cli.json,
+                format!("batch ran {ran} ops on {peer}"),
+                json!({"ops": ran, "results": results}),
+            );
+            r
         }
         Cmd::Restart { peer } => {
-            known_peer(&peer)?;
-            live_only(&format!("restart {peer}"))
+            let password = load_password(cli.password_file.as_deref())?;
+            let mut live = live_session(&peer, &password)?;
+            let req = live.next_req();
+            tethercraft_net::rpc::power(
+                &mut live.sess,
+                req,
+                tethercraft_proto::MessageKind::Restart,
+                5,
+            )?;
+            let r = live.finish();
+            print_out(
+                cli.json,
+                format!("{peer} restarting"),
+                json!({"restart": true}),
+            );
+            r
         }
         Cmd::Shutdown { peer } => {
-            known_peer(&peer)?;
-            live_only(&format!("shutdown {peer}"))
+            let password = load_password(cli.password_file.as_deref())?;
+            let mut live = live_session(&peer, &password)?;
+            let req = live.next_req();
+            tethercraft_net::rpc::power(
+                &mut live.sess,
+                req,
+                tethercraft_proto::MessageKind::Shutdown,
+                5,
+            )?;
+            let r = live.finish();
+            print_out(
+                cli.json,
+                format!("{peer} shutting down"),
+                json!({"shutdown": true}),
+            );
+            r
         }
         Cmd::Lock { peer } => {
-            known_peer(&peer)?;
-            live_only(&format!("lock {peer}"))
+            let password = load_password(cli.password_file.as_deref())?;
+            let mut live = live_session(&peer, &password)?;
+            let req = live.next_req();
+            tethercraft_net::rpc::power(
+                &mut live.sess,
+                req,
+                tethercraft_proto::MessageKind::Lock,
+                0,
+            )?;
+            let r = live.finish();
+            print_out(cli.json, format!("{peer} locked"), json!({"locked": true}));
+            r
         }
         Cmd::Exec { peer, command } => {
-            known_peer(&peer)?;
             if command.is_empty() {
                 return Err(TetherError::Invalid("exec needs a command".to_string()));
             }
-            live_only(&format!("exec {peer} (terminal channel, permission-gated)"))
+            let password = load_password(cli.password_file.as_deref())?;
+            let mut live = live_session(&peer, &password)?;
+            let req = live.next_req();
+            let cmdline = command.join(" ");
+            let (code, output) = tethercraft_net::rpc::exec(&mut live.sess, req, &cmdline)?;
+            let r = live.finish();
+            if cli.json {
+                println!("{}", json!({"exit": code, "output": output}));
+            } else {
+                println!("exit code: {code}");
+                println!("{output}");
+            }
+            r
         }
         Cmd::Tunnel { peer, mapping } => {
-            known_peer(&peer)?;
             let (port, target) = parse_mapping(&mapping)?;
-            live_only(&format!("tunnel {peer} {port}:{target}"))
+            let password = load_password(cli.password_file.as_deref())?;
+            let mut live = live_session(&peer, &password)?;
+            tunnel_command(&mut live, port, &target)
+        }
+        Cmd::Chat { peer, text } => {
+            let password = load_password(cli.password_file.as_deref())?;
+            let mut live = live_session(&peer, &password)?;
+            tethercraft_net::rpc::chat_send(&mut live.sess, &text)?;
+            let r = live.finish();
+            print_out(cli.json, format!("sent to {peer}"), json!({"sent": true}));
+            r
         }
         Cmd::Recordings { op } => match op {
             RecordOp::List { dir } => {
@@ -827,13 +1396,13 @@ fn run() -> Result<(), TetherError> {
         }
         Cmd::Host {
             port,
-            password_file,
             grants,
             fps,
             fake_frames,
             codec,
             pin_key,
             identity_file,
+            share,
         } => {
             if fps == 0 || fps > 60 {
                 return Err(TetherError::Invalid("fps must be 1..=60".to_string()));
@@ -851,7 +1420,7 @@ fn run() -> Result<(), TetherError> {
                     ));
                 }
             }
-            let password = load_password(password_file.as_deref())?;
+            let password = load_password(cli.password_file.as_deref())?;
             if password.is_empty() {
                 return Err(TetherError::Invalid("empty password".to_string()));
             }
@@ -887,6 +1456,7 @@ fn run() -> Result<(), TetherError> {
                 stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 codec: codec.clone(),
                 pin_key: pin_key.clone(),
+                share_root: share.map(std::path::PathBuf::from),
             };
             print_out(
                 cli.json,
@@ -937,7 +1507,6 @@ fn run() -> Result<(), TetherError> {
         }
         Cmd::Serve {
             peer,
-            password_file,
             view_only,
             out,
             frames,
@@ -945,7 +1514,7 @@ fn run() -> Result<(), TetherError> {
         } => {
             let (addr, expected) = peer_addr_key(&peer)?;
             let had_pin = expected.is_some();
-            let password = load_password(password_file.as_deref())?;
+            let password = load_password(cli.password_file.as_deref())?;
             let (saved, key) = tethercraft_net::session::run_headless_controller_count(
                 &addr,
                 &password,
