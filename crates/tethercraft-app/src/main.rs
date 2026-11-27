@@ -6,6 +6,7 @@ use serde_json::json;
 use tethercraft_core::TetherError;
 use tethercraft_net::{fingerprint_hex, fingerprint_words, generate_device_key, public_key_bytes};
 
+mod service;
 mod ui;
 
 #[derive(Parser)]
@@ -155,6 +156,26 @@ enum Cmd {
         #[arg(long, default_value_t = false)]
         input_probe: bool,
     },
+    Service {
+        #[command(subcommand)]
+        op: ServiceOp,
+    },
+    #[command(hide = true)]
+    ServiceRun {
+        #[arg(long)]
+        config: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServiceOp {
+    Install {
+        #[arg(long)]
+        config: Option<String>,
+    },
+    Uninstall,
+    Start,
+    Stop,
 }
 
 #[derive(Subcommand)]
@@ -352,32 +373,10 @@ fn load_password(path: Option<&str>) -> Result<Vec<u8>, TetherError> {
     }
 }
 
-/// Parse `--grants keyboard,touch` into host permissions.
+/// Parse `--grants keyboard,touch` into host permissions. Lives in the
+/// service module so the config-file path shares it.
 fn parse_grants(spec: &str) -> Result<Vec<tethercraft_core::Permission>, TetherError> {
-    use tethercraft_core::Permission as P;
-    let mut out = Vec::new();
-    for part in spec.split(',') {
-        let p = match part.trim() {
-            "" => continue,
-            "keyboard" | "input" => P::Keyboard,
-            "touch" => P::Touch,
-            "clipboard" => P::Clipboard,
-            "file" | "files" => P::File,
-            "audio" => P::Audio,
-            "terminal" => P::Terminal,
-            "privacy" => P::Privacy,
-            "camera" => P::Camera,
-            "tunnel" => P::Tunnel,
-            "restart" => P::Restart,
-            other => {
-                return Err(TetherError::Invalid(format!(
-                    "unknown grant '{other}' (keyboard, touch, clipboard, file, audio, terminal, privacy, camera, tunnel, restart)"
-                )))
-            }
-        };
-        out.push(p);
-    }
-    Ok(out)
+    service::parse_grants(spec)
 }
 
 fn grant_names(grants: &[tethercraft_core::Permission]) -> Vec<String> {
@@ -1623,6 +1622,33 @@ fn run() -> Result<(), TetherError> {
                 json!({"frames": frames, "saved": saved, "view_only": view_only}),
             );
             Ok(())
+        }
+        Cmd::Service { op } => match op {
+            ServiceOp::Install { config } => service::install(config.as_deref()),
+            ServiceOp::Uninstall => service::uninstall(),
+            ServiceOp::Start => service::start_svc(),
+            ServiceOp::Stop => service::stop_svc(),
+        },
+        Cmd::ServiceRun { config } => {
+            let path = match config {
+                Some(p) => std::path::PathBuf::from(p),
+                None => service::default_config_path()?,
+            };
+            #[cfg(windows)]
+            {
+                // Under SCM this blocks as the service until stop. In a
+                // console the dispatch fails, so host directly instead.
+                match service::run_dispatcher() {
+                    Ok(()) => return Ok(()),
+                    Err(e) => eprintln!("not under SCM ({e}); hosting in console instead"),
+                }
+            }
+            // In a console Ctrl+C kills the process, same as the `host` verb.
+            service::run_host_service(
+                &path,
+                cli.json,
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
         }
     }
 }

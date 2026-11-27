@@ -80,21 +80,24 @@ pub fn relay_connect(
         .ok_or_else(|| TetherError::Invalid("relay refused bridge".to_string()))?
         .to_string();
     drop(ctl);
-    let mut claim = dial(server_addr, HANDSHAKE_TIMEOUT)?;
-    send_json_line(
-        &mut claim,
-        &serde_json::json!({"op": "claim", "token": token, "role": "a"}),
-    )?;
-    let resp = read_json_line(&mut claim)?;
-    if !resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-        return Err(TetherError::Invalid(format!("relay claim failed: {resp}")));
-    }
-    Ok(claim)
+    relay_claim(server_addr, &token, "a")
 }
 
 /// Host side of a relayed session: announce availability and wait for a
 /// controller to ask for us, then claim. Blocks until paired (Ctrl+C aborts).
 pub fn relay_await(server_addr: &str, my_id: &str) -> Result<TcpStream, TetherError> {
+    let never = std::sync::atomic::AtomicBool::new(false);
+    relay_await_cancel(server_addr, my_id, &never)
+}
+
+/// Stoppable variant: the check-poll loop aborts when `stop` is set, so a
+/// Windows service stop does not hang forever waiting for a controller.
+pub fn relay_await_cancel(
+    server_addr: &str,
+    my_id: &str,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Result<TcpStream, TetherError> {
+    use std::sync::atomic::Ordering;
     let mut ctl = dial(server_addr, HANDSHAKE_TIMEOUT)?;
     send_json_line(
         &mut ctl,
@@ -102,6 +105,9 @@ pub fn relay_await(server_addr: &str, my_id: &str) -> Result<TcpStream, TetherEr
     )?;
     let _ = read_json_line(&mut ctl)?;
     let token = loop {
+        if stop.load(Ordering::Relaxed) {
+            return Err(TetherError::Invalid("stopped".to_string()));
+        }
         send_json_line(&mut ctl, &serde_json::json!({"op": "check", "id": my_id}))
             .map_err(|_| TetherError::Invalid("relay check failed; server gone?".to_string()))?;
         if let Ok(resp) = read_json_line(&mut ctl) {
@@ -114,10 +120,19 @@ pub fn relay_await(server_addr: &str, my_id: &str) -> Result<TcpStream, TetherEr
         std::thread::sleep(Duration::from_secs(1));
     };
     drop(ctl);
+    if stop.load(Ordering::Relaxed) {
+        return Err(TetherError::Invalid("stopped".to_string()));
+    }
+    relay_claim(server_addr, &token, "b")
+}
+
+/// Claim one half of a bridged pairing. Role "a" is the controller side,
+/// "b" the host side. Returns a raw socket ready for the session handshake.
+fn relay_claim(server_addr: &str, token: &str, role: &str) -> Result<TcpStream, TetherError> {
     let mut claim = dial(server_addr, HANDSHAKE_TIMEOUT)?;
     send_json_line(
         &mut claim,
-        &serde_json::json!({"op": "claim", "token": token, "role": "b"}),
+        &serde_json::json!({"op": "claim", "token": token, "role": role}),
     )?;
     let resp = read_json_line(&mut claim)?;
     if !resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
