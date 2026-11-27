@@ -433,10 +433,17 @@ impl ControllerUi {
 
 impl eframe::App for ControllerUi {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let dz = ctx.input(|i| i.zoom_delta());
+        let (dz, reset_zoom) = ctx.input(|i| {
+            let ctrl = i.modifiers.ctrl || i.modifiers.command;
+            (i.zoom_delta(), ctrl && i.key_pressed(egui::Key::Num0))
+        });
         if dz != 1.0 {
             self.zoom = clamp_zoom(self.zoom * dz);
         }
+        if reset_zoom {
+            self.zoom = 1.0;
+        }
+        ctx.set_zoom_factor(self.zoom.clamp(0.75, 2.0));
 
         // R1 gate: modal, cannot be dismissed except by answering.
         if self.onboarding_open {
@@ -496,29 +503,33 @@ impl eframe::App for ControllerUi {
             });
         }
 
-        egui::SidePanel::left("peers").show(ctx, |ui| {
-            ui.heading("Peers");
-            let mut pick: Option<String> = None;
-            for (id, alias) in &self.peers {
-                let name = if alias.is_empty() {
-                    id.clone()
-                } else {
-                    format!("{alias} ({id})")
-                };
-                if ui
-                    .selectable_label(self.selected.as_deref() == Some(id.as_str()), name)
-                    .clicked()
-                {
-                    pick = Some(id.clone());
+        egui::SidePanel::left("peers")
+            .resizable(true)
+            .default_width(210.0)
+            .width_range(150.0..=360.0)
+            .show(ctx, |ui| {
+                ui.heading("Peers");
+                let mut pick: Option<String> = None;
+                for (id, alias) in &self.peers {
+                    let name = if alias.is_empty() {
+                        id.clone()
+                    } else {
+                        format!("{alias} ({id})")
+                    };
+                    if ui
+                        .selectable_label(self.selected.as_deref() == Some(id.as_str()), name)
+                        .clicked()
+                    {
+                        pick = Some(id.clone());
+                    }
                 }
-            }
-            if let Some(id) = pick {
-                self.select(&id);
-            }
-            if ui.button("Connect").clicked() {
-                self.start_session();
-            }
-        });
+                if let Some(id) = pick {
+                    self.select(&id);
+                }
+                if ui.button("Connect").clicked() {
+                    self.start_session();
+                }
+            });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.session_active {
