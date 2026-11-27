@@ -18,9 +18,46 @@ pub const ONBOARDING_WAIT_SECS: u64 = 20;
 /// Outgoing-only window after a yes/not-sure answer (matches core R1).
 pub const OUTGOING_ONLY_SECS: i64 = 24 * 60 * 60;
 
+/// One address-book row as shown on the peer board. `has_key` tells whether
+/// the host key is already pinned (green) or this would be first contact
+/// (amber): the same TOFU state the CLI prints as words.
+#[derive(Debug, Clone)]
+pub struct PeerCard {
+    pub id: String,
+    pub alias: String,
+    pub addr: Option<String>,
+    pub has_key: bool,
+}
+
+impl PeerCard {
+    pub fn display_name(&self) -> String {
+        if self.alias.is_empty() {
+            self.id.clone()
+        } else {
+            self.alias.clone()
+        }
+    }
+
+    pub fn matches(&self, query: &str) -> bool {
+        if query.is_empty() {
+            return true;
+        }
+        let q = query.to_lowercase();
+        self.id.to_lowercase().contains(&q)
+            || self.alias.to_lowercase().contains(&q)
+            || self
+                .addr
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&q)
+    }
+}
+
 pub struct ControllerUi {
-    pub peers: Vec<(String, String)>,
+    pub peers: Vec<PeerCard>,
     pub selected: Option<String>,
+    pub search: String,
     pub zoom: f32,
     pub session_active: bool,
     pub recording: bool,
@@ -158,7 +195,7 @@ pub fn connect_live_pinned(
 
 impl ControllerUi {
     pub fn new(
-        peers: Vec<(String, String)>,
+        peers: Vec<PeerCard>,
         outgoing_only: bool,
         needs_answer: bool,
         marker_path: Option<PathBuf>,
@@ -166,6 +203,7 @@ impl ControllerUi {
         Self {
             peers,
             selected: None,
+            search: String::new(),
             zoom: 1.0,
             session_active: false,
             recording: false,
@@ -509,28 +547,33 @@ impl eframe::App for ControllerUi {
             .width_range(150.0..=360.0)
             .show(ctx, |ui| {
                 ui.heading("Peers");
-                let mut pick: Option<String> = None;
-                for (id, alias) in &self.peers {
-                    let name = if alias.is_empty() {
-                        id.clone()
-                    } else {
-                        format!("{alias} ({id})")
-                    };
-                    if ui
-                        .selectable_label(self.selected.as_deref() == Some(id.as_str()), name)
-                        .clicked()
-                    {
-                        pick = Some(id.clone());
-                    }
-                }
-                if let Some(id) = pick {
-                    self.select(&id);
-                }
+                ui.text_edit_singleline(&mut self.search);
+                ui.label(format!(
+                    "{} of {} shown",
+                    self.peers
+                        .iter()
+                        .filter(|p| p.matches(&self.search))
+                        .count(),
+                    self.peers.len()
+                ));
                 if ui.button("Connect").clicked() {
                     self.start_session();
                 }
+                ui.separator();
+                ui.small(
+                    "Click a card to select. Double-click a card (or press Connect) to start.",
+                );
+                if self.search.is_empty() {
+                    ui.small("Type above to filter by name, id, or address.");
+                }
             });
 
+        // RustDesk-style peer board: one card per peer, green pin when the
+        // host key is already recorded, amber on first contact. In-window
+        // dialing is not wired yet, so Connect starts the local session
+        // exactly like the sidebar button always did.
+        let mut pick: Option<String> = None;
+        let mut go = false;
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.session_active {
                 self.paint_frame(ctx);
@@ -550,11 +593,68 @@ impl eframe::App for ControllerUi {
                 }
                 self.forward_input(ctx);
             } else {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Pick a peer and press Connect.");
+                egui::ScrollArea::both().show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        let query = self.search.clone();
+                        let selected = self.selected.clone();
+                        for peer in self.peers.iter().filter(|p| p.matches(&query)) {
+                            let is_sel = selected.as_deref() == Some(peer.id.as_str());
+                            let dot = if peer.has_key {
+                                egui::Color32::GREEN
+                            } else {
+                                egui::Color32::YELLOW
+                            };
+                            let frame = egui::Frame::group(ui.style())
+                                .stroke(if is_sel {
+                                    egui::Stroke::new(2.0_f32, egui::Color32::LIGHT_BLUE)
+                                } else {
+                                    ui.style().visuals.widgets.noninteractive.bg_stroke
+                                })
+                                .show(ui, |ui| {
+                                    ui.set_min_size(egui::vec2(170.0, 104.0));
+                                    ui.horizontal(|ui| {
+                                        ui.colored_label(dot, "●");
+                                        ui.strong(peer.display_name());
+                                    });
+                                    ui.monospace(&peer.id);
+                                    ui.small(
+                                        peer.addr
+                                            .clone()
+                                            .unwrap_or_else(|| "no address yet".to_string()),
+                                    );
+                                    ui.small(if peer.has_key {
+                                        "key pinned"
+                                    } else {
+                                        "first contact: verify words"
+                                    });
+                                    if ui.small_button("Connect").clicked() {
+                                        pick = Some(peer.id.clone());
+                                        go = true;
+                                    }
+                                });
+                            let resp = frame.response.interact(egui::Sense::click());
+                            if resp.clicked() {
+                                pick = Some(peer.id.clone());
+                            }
+                            if resp.double_clicked() {
+                                pick = Some(peer.id.clone());
+                                go = true;
+                            }
+                        }
+                    });
+                    if self.peers.is_empty() {
+                        ui.label("Address book is empty. Add a peer first:");
+                        ui.monospace("tethercraft book add <peer> <host-key-hex> --addr host:port");
+                    }
                 });
             }
         });
+        if let Some(id) = pick {
+            self.select(&id);
+        }
+        if go {
+            self.start_session();
+        }
 
         egui::TopBottomPanel::bottom("audit").show(ctx, |ui| {
             ui.collapsing("Audit", |ui| {
@@ -639,9 +739,18 @@ mod tests {
         assert!(clamp_zoom(9.0) == 4.0);
     }
 
+    fn card(id: &str) -> PeerCard {
+        PeerCard {
+            id: id.to_string(),
+            alias: String::new(),
+            addr: None,
+            has_key: false,
+        }
+    }
+
     #[test]
     fn select_start_end() {
-        let mut ui = ControllerUi::new(vec![("p1".to_string(), String::new())], false, false, None);
+        let mut ui = ControllerUi::new(vec![card("p1")], false, false, None);
         ui.start_session();
         assert!(!ui.session_active);
         ui.select("p1");
@@ -655,7 +764,7 @@ mod tests {
 
     #[test]
     fn onboarding_blocks_session_start() {
-        let mut ui = ControllerUi::new(vec![("p1".to_string(), String::new())], false, true, None);
+        let mut ui = ControllerUi::new(vec![card("p1")], false, true, None);
         assert!(ui.onboarding_open);
         ui.select("p1");
         ui.start_session();
@@ -693,6 +802,22 @@ mod tests {
         assert!(ControllerUi::vk_for_key(egui::Key::Enter) == Some(0x0D));
         assert!(ControllerUi::vk_for_key(egui::Key::F5) == Some(0x74));
         assert!(ControllerUi::vk_for_key(egui::Key::Num9) == Some(0x39));
+    }
+
+    #[test]
+    fn board_search_filters() {
+        let mut wired = PeerCard {
+            id: "goliath".to_string(),
+            alias: "Goliath".to_string(),
+            addr: Some("127.0.0.1:21120".to_string()),
+            has_key: true,
+        };
+        assert!(wired.matches(""));
+        assert!(wired.matches("gol"));
+        assert!(wired.matches("127.0.0"));
+        assert!(!wired.matches("zebra"));
+        wired.alias = String::new();
+        assert!(wired.display_name() == "goliath");
     }
 
     #[test]

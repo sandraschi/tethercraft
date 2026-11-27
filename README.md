@@ -24,10 +24,13 @@ tools. Not yet done: the two-machine LAN/Tailscale run, codecs, OS sensors. See
 
 ## Controller UI
 
-`tethercraft gui` opens the L3 egui window: peer sidebar from the address
-book, session view, always-visible End session button while connected, Ctrl +
-wheel zoom, audit tail, and the R1 install gate (20-second wait, answer stored
-in `onboarding.txt` next to the store; yes/not-sure enables 24 h
+`tethercraft gui` opens the L3 egui window: a RustDesk-style peer board
+(cards with alias, id, address, and a green key-pinned / amber
+first-contact dot), a search box filtering by name, id, or address, click to
+select, double-click (or the Connect button) to start, session view,
+always-visible End session button while connected, Ctrl + wheel zoom, audit
+tail, and the R1 install gate (20-second wait, answer stored in
+`onboarding.txt` next to the store; yes/not-sure enables 24 h
 outgoing-only with a banner).
 
 `tethercraft connect <peer>` dials the host, runs the handshake, and opens the

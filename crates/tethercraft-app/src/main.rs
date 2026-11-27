@@ -387,7 +387,7 @@ fn grant_names(grants: &[tethercraft_core::Permission]) -> Vec<String> {
 }
 
 /// Open the controller GUI window. Returns after the window closes.
-fn run_gui(peers: Vec<(String, String)>, live: Option<ui::LiveSource>) -> Result<(), TetherError> {
+fn run_gui(peers: Vec<ui::PeerCard>, live: Option<ui::LiveSource>) -> Result<(), TetherError> {
     let (outgoing, needs_answer, marker) = read_onboarding();
     let mut app = ui::ControllerUi::new(peers, outgoing, needs_answer, marker);
     if let Some(l) = live {
@@ -402,11 +402,16 @@ fn run_gui(peers: Vec<(String, String)>, live: Option<ui::LiveSource>) -> Result
     Ok(())
 }
 
-fn peer_list() -> Vec<(String, String)> {
+fn peer_list() -> Vec<ui::PeerCard> {
     match open_store().and_then(|s| s.list_peers()) {
         Ok(rows) => rows
             .into_iter()
-            .map(|r| (r.peer_id, r.alias.unwrap_or_default()))
+            .map(|r| ui::PeerCard {
+                id: r.peer_id,
+                alias: r.alias.unwrap_or_default(),
+                addr: r.addr,
+                has_key: !r.pubkey_hex.trim().is_empty(),
+            })
             .collect(),
         Err(_) => Vec::new(),
     }
