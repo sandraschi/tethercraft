@@ -3602,9 +3602,13 @@ name = "tethercraft-mcp"
 version = "0.9.0"
 dependencies = [
  "chrono",
+ "hex",
  "serde",
  "serde_json",
  "tethercraft-core",
+ "tethercraft-input",
+ "tethercraft-net",
+ "tethercraft-proto",
  "tethercraft-store",
  "thiserror 2.0.21",
 ]

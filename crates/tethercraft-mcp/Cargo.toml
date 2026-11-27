@@ -13,7 +13,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
+hex = { workspace = true }
 tethercraft-core = { path = "../tethercraft-core" }
+tethercraft-proto = { path = "../tethercraft-proto" }
+tethercraft-net = { path = "../tethercraft-net" }
+tethercraft-input = { path = "../tethercraft-input" }
 tethercraft-store = { path = "../tethercraft-store" }
 
 [lints]
