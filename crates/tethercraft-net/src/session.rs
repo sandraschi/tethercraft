@@ -23,6 +23,109 @@ const MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Default host port. Outside the RustDesk 21115-21119 range on purpose.
 pub const DEFAULT_SESSION_PORT: u16 = 21120;
+/// Seconds to wait for one relay line before retrying the poll.
+pub const RELAY_LINE_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn send_json_line(stream: &mut TcpStream, v: &serde_json::Value) -> Result<(), TetherError> {
+    use std::io::Write as _;
+    let mut s = serde_json::to_string(v)
+        .map_err(|e| TetherError::Invalid(format!("relay encode: {e}")))?;
+    s.push('\n');
+    stream
+        .write_all(s.as_bytes())
+        .map_err(|e| TetherError::Invalid(format!("relay write: {e}")))?;
+    stream
+        .flush()
+        .map_err(|e| TetherError::Invalid(format!("relay flush: {e}")))?;
+    Ok(())
+}
+
+fn read_json_line(stream: &mut TcpStream) -> Result<serde_json::Value, TetherError> {
+    use std::io::BufRead as _;
+    // Fresh reader per line on purpose: the socket turns into a raw byte
+    // stream right after the claim handshake, so nothing may be buffered.
+    let mut reader = std::io::BufReader::new(stream.try_clone().map_err(|e| {
+        TetherError::Invalid(format!("relay clone: {e}"))
+    })?);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|e| TetherError::Invalid(format!("relay read: {e}")))?;
+    if line.trim().is_empty() {
+        return Err(TetherError::Invalid("relay closed".to_string()));
+    }
+    serde_json::from_str(line.trim()).map_err(|e| TetherError::Invalid(format!("relay json: {e}")))
+}
+
+/// Controller side of a relayed session: ask the rendezvous server to bridge
+/// us to `target`, then claim our half. Returns a raw socket ready for the
+/// normal session handshake. The relay only ever sees opaque bytes.
+pub fn relay_connect(server_addr: &str, my_id: &str, target_id: &str) -> Result<TcpStream, TetherError> {
+    let mut ctl = dial(server_addr, HANDSHAKE_TIMEOUT)?;
+    send_json_line(
+        &mut ctl,
+        &serde_json::json!({"op": "bridge", "id": my_id, "to": target_id}),
+    )?;
+    let resp = read_json_line(&mut ctl)?;
+    let token = resp
+        .get("token")
+        .and_then(|v| v.as_str())
+        .filter(|_| resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
+        .ok_or_else(|| TetherError::Invalid("relay refused bridge".to_string()))?
+        .to_string();
+    drop(ctl);
+    let mut claim = dial(server_addr, HANDSHAKE_TIMEOUT)?;
+    send_json_line(&mut claim, &serde_json::json!({"op": "claim", "token": token, "role": "a"}))?;
+    let resp = read_json_line(&mut claim)?;
+    if !resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return Err(TetherError::Invalid(format!("relay claim failed: {resp}")));
+    }
+    Ok(claim)
+}
+
+/// Host side of a relayed session: announce availability and wait for a
+/// controller to ask for us, then claim. Blocks until paired (Ctrl+C aborts).
+pub fn relay_await(server_addr: &str, my_id: &str) -> Result<TcpStream, TetherError> {
+    let mut ctl = dial(server_addr, HANDSHAKE_TIMEOUT)?;
+    send_json_line(&mut ctl, &serde_json::json!({"op": "await_bridge", "id": my_id}))?;
+    let _ = read_json_line(&mut ctl)?;
+    loop {
+        send_json_line(&mut ctl, &serde_json::json!({"op": "check", "id": my_id}))?;
+        match read_json_line(&mut ctl) {
+            Ok(resp) => {
+                if let Some(token) = resp.get("token").and_then(|v| v.as_str()) {
+                    if !token.is_empty() {
+                        break;
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    // Re-read until we hold the token (the loop above breaks only on token,
+    // but keep the value simple and re-query once for clarity).
+    send_json_line(&mut ctl, &serde_json::json!({"op": "check", "id": my_id}))?;
+    let token = match read_json_line(&mut ctl) {
+        Ok(resp) => resp
+            .get("token")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        Err(_) => String::new(),
+    };
+    if token.is_empty() {
+        return Err(TetherError::Invalid("relay pairing lost".to_string()));
+    }
+    drop(ctl);
+    let mut claim = dial(server_addr, HANDSHAKE_TIMEOUT)?;
+    send_json_line(&mut claim, &serde_json::json!({"op": "claim", "token": token, "role": "b"}))?;
+    let resp = read_json_line(&mut claim)?;
+    if !resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return Err(TetherError::Invalid(format!("relay claim failed: {resp}")));
+    }
+    Ok(claim)
+}
 
 pub struct SessionStream {
     stream: TcpStream,

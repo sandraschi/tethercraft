@@ -5,7 +5,9 @@
 //! input. Clipboard sync and the OS sensors feeding R4 are still pending and
 //! end up in the audit log as pending, never silently dropped.
 
-use std::net::TcpListener;
+use std::collections::HashMap;
+use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc, Arc,
@@ -19,7 +21,7 @@ use tethercraft_net::session::{self, SessionStream};
 use tethercraft_net::{generate_device_key, public_key_bytes, LoginRateLimiter};
 use tethercraft_proto::{Envelope, MessageKind};
 
-use super::{ChatLog, Host};
+use super::{files::FileManager, ops, ChatLog, Host};
 use crate::inject;
 
 pub struct ServeConfig {
@@ -32,6 +34,8 @@ pub struct ServeConfig {
     pub stop: Arc<AtomicBool>,
     pub codec: String,
     pub pin_key: Option<String>,
+    /// Root of the shared folder for file transfer. None disables file verbs.
+    pub share_root: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -49,6 +53,91 @@ pub struct SessionReport {
 fn audit(store: &tethercraft_store::Store, peer: &str, action: &str, result: &str) {
     let ev = tethercraft_core::AuditEvent::new(Utc::now(), peer, action, result);
     let _ = store.log(&ev);
+}
+
+/// Outbound tunnel traffic: bytes read from a remote target, or channel death.
+enum TunnelOut {
+    Data(u32, Vec<u8>),
+    Closed(u32),
+}
+
+/// Open a TCP tunnel channel to `target` ("host:port" as seen from here).
+/// Returns the writer other end; the reader thread forwards into `outbox`.
+/// At most 16 concurrent channels; the caller enforces that.
+fn open_tunnel(
+    channel: u32,
+    target: &str,
+    outbox: mpsc::Sender<TunnelOut>,
+) -> Result<mpsc::Sender<Vec<u8>>, TetherError> {
+    let mut parts = target.rsplitn(2, ':');
+    let port: u16 = parts
+        .next()
+        .and_then(|p| p.parse().ok())
+        .filter(|p| *p != 0)
+        .ok_or_else(|| TetherError::Invalid("bad tunnel target (want host:port)".to_string()))?;
+    let host = parts
+        .next()
+        .ok_or_else(|| TetherError::Invalid("bad tunnel target (want host:port)".to_string()))?;
+    if host.trim().is_empty() {
+        return Err(TetherError::Invalid(
+            "bad tunnel target (want host:port)".to_string(),
+        ));
+    }
+    let addr = format!("{host}:{port}");
+    let stream = TcpStream::connect_timeout(
+        &addr
+            .parse()
+            .map_err(|_| TetherError::Invalid(format!("cannot resolve tunnel target {addr}")))?,
+        Duration::from_secs(10),
+    )
+    .map_err(|e| TetherError::Invalid(format!("tunnel connect failed: {e}")))?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(300)));
+    let (to_remote_tx, to_remote_rx) = mpsc::channel::<Vec<u8>>();
+    // Reader: remote target -> controller.
+    let out = outbox.clone();
+    let mut reader = match stream.try_clone() {
+        Ok(s) => s,
+        Err(e) => return Err(TetherError::Invalid(format!("tunnel clone: {e}"))),
+    };
+    std::thread::spawn(move || {
+        let mut buf = vec![0u8; 60 * 1024];
+        loop {
+            use std::io::Read;
+            match reader.read(&mut buf) {
+                Ok(0) => {
+                    let _ = out.send(TunnelOut::Closed(channel));
+                    break;
+                }
+                Ok(n) => {
+                    if out
+                        .send(TunnelOut::Data(channel, buf[..n].to_vec()))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    let _ = out.send(TunnelOut::Closed(channel));
+                    break;
+                }
+            }
+        }
+    });
+    // Writer: controller -> remote target.
+    std::thread::spawn(move || {
+        let mut writer = stream;
+        use std::io::Write;
+        for chunk in to_remote_rx {
+            if writer.write_all(&chunk).is_err() || writer.flush().is_err() {
+                break;
+            }
+        }
+    });
+    Ok(to_remote_tx)
+}
+
+fn close_tunnel(tunnels: &mut HashMap<u32, mpsc::Sender<Vec<u8>>>, channel: u32) {
+    tunnels.remove(&channel);
 }
 
 /// Read envelopes on a dedicated thread. A blocking read is the only safe way
@@ -262,6 +351,22 @@ pub fn serve_one(
     }
     audit(store, &auth.peer_id, "session-start", "ok");
     let mut chat = ChatLog::new();
+    let mut uploads: ops::Uploads = HashMap::new();
+    // Async exec results and tunnel traffic arrive here; the main loop sends them.
+    let (exec_tx, exec_rx) = mpsc::channel::<tethercraft_proto::ExecDone>();
+    let mut exec_running = false;
+    let (tun_tx, tun_rx) = mpsc::channel::<TunnelOut>();
+    let mut tunnels: HashMap<u32, mpsc::Sender<Vec<u8>>> = HashMap::new();
+    let fm = match &cfg.share_root {
+        Some(root) => {
+            if let Some(parent) = root.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::create_dir_all(root);
+            FileManager::new(root).ok()
+        }
+        None => None,
+    };
 
     let frames = spawn_pump(
         cfg.fake_frames,
@@ -374,6 +479,277 @@ pub fn serve_one(
                     MessageKind::ClipboardText | MessageKind::ClipboardImage => {
                         audit(store, &auth.peer_id, "clipboard", "pending-host-sync");
                     }
+                    MessageKind::FileList
+                    | MessageKind::FileGet
+                    | MessageKind::FilePut
+                    | MessageKind::FileChunk
+                    | MessageKind::FileRm
+                    | MessageKind::FileMv
+                    | MessageKind::FileMkdir
+                    | MessageKind::FileHash => {
+                        if fm.is_none() {
+                            audit(
+                                store,
+                                &auth.peer_id,
+                                "files",
+                                "denied: no shared folder (start host with --share DIR)",
+                            );
+                            continue;
+                        }
+                        match host.authorize(&auth.peer_id, env.kind, now) {
+                            Err(e) => {
+                                report.denied_inputs = report.denied_inputs.saturating_add(1);
+                                audit(store, &auth.peer_id, "files", &format!("denied: {e}"));
+                            }
+                            Ok(()) => {
+                                if let Some(fm) = fm.as_ref() {
+                                    let replies = crate::ops::handle_file(
+                                        fm,
+                                        env.kind,
+                                        &env.payload,
+                                        &mut uploads,
+                                    );
+                                    for (kind, payload) in replies {
+                                        let out = Envelope::new(kind, my_pub, payload);
+                                        if sess.send_envelope(&out).is_err() {
+                                            report.ended = "frame-send-failed".to_string();
+                                            break;
+                                        }
+                                    }
+                                    if report.ended == "frame-send-failed" {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    MessageKind::ExecRequest => {
+                        match host.authorize(&auth.peer_id, env.kind, now) {
+                            Err(e) => {
+                                report.denied_inputs = report.denied_inputs.saturating_add(1);
+                                audit(store, &auth.peer_id, "exec", &format!("denied: {e}"));
+                            }
+                            Ok(()) => {
+                                match session::parse_json::<tethercraft_proto::ExecReq>(
+                                    &env.payload,
+                                ) {
+                                    Err(e) => {
+                                        audit(
+                                            store,
+                                            &auth.peer_id,
+                                            "exec",
+                                            &format!("bad request: {e}"),
+                                        );
+                                    }
+                                    Ok(req) if exec_running => {
+                                        let _ = sess.send_envelope(&Envelope::new(
+                                            MessageKind::ExecDone,
+                                            my_pub,
+                                            session::json_bytes(&tethercraft_proto::ExecDone {
+                                                req_id: req.req_id,
+                                                exit_code: -1,
+                                                output: "another exec is already running"
+                                                    .to_string(),
+                                            })
+                                            .unwrap_or_default(),
+                                        ));
+                                    }
+                                    Ok(req) => {
+                                        exec_running = true;
+                                        let tx = exec_tx.clone();
+                                        let req_id = req.req_id;
+                                        let command = req.command;
+                                        audit(
+                                            store,
+                                            &auth.peer_id,
+                                            "exec",
+                                            &format!("start req {req_id}"),
+                                        );
+                                        std::thread::spawn(move || {
+                                            let done = match crate::ops::run_exec(&command) {
+                                                Ok((code, output)) => tethercraft_proto::ExecDone {
+                                                    req_id,
+                                                    exit_code: code,
+                                                    output,
+                                                },
+                                                Err(e) => tethercraft_proto::ExecDone {
+                                                    req_id,
+                                                    exit_code: -1,
+                                                    output: format!("failed: {e}"),
+                                                },
+                                            };
+                                            let _ = tx.send(done);
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    MessageKind::Restart | MessageKind::Shutdown | MessageKind::Lock => {
+                        match host.authorize(&auth.peer_id, env.kind, now) {
+                            Err(e) => {
+                                report.denied_inputs = report.denied_inputs.saturating_add(1);
+                                audit(store, &auth.peer_id, "power", &format!("denied: {e}"));
+                            }
+                            Ok(()) => {
+                                let req: Result<tethercraft_proto::PowerReq, _> =
+                                    session::parse_json(&env.payload);
+                                let (ok, err) = match req {
+                                    Err(e) => (false, format!("bad request: {e}")),
+                                    Ok(r) => {
+                                        let action = match env.kind {
+                                            MessageKind::Restart => {
+                                                crate::ops::PowerAction::Restart
+                                            }
+                                            MessageKind::Shutdown => {
+                                                crate::ops::PowerAction::Shutdown
+                                            }
+                                            _ => crate::ops::PowerAction::Lock,
+                                        };
+                                        audit(
+                                            store,
+                                            &auth.peer_id,
+                                            "power",
+                                            &format!("{:?} delay {}", env.kind, r.delay_secs),
+                                        );
+                                        match crate::ops::power(action, r.delay_secs) {
+                                            Ok(()) => (true, String::new()),
+                                            Err(e) => (false, format!("{e}")),
+                                        }
+                                    }
+                                };
+                                let reply = tethercraft_proto::PowerAck {
+                                    req_id: 0,
+                                    ok,
+                                    error: err,
+                                };
+                                let _ = sess.send_envelope(&Envelope::new(
+                                    MessageKind::PowerAck,
+                                    my_pub,
+                                    session::json_bytes(&reply).unwrap_or_default(),
+                                ));
+                            }
+                        }
+                    }
+                    MessageKind::TunnelOpen => match host.authorize(&auth.peer_id, env.kind, now) {
+                        Err(e) => {
+                            report.denied_inputs = report.denied_inputs.saturating_add(1);
+                            audit(store, &auth.peer_id, "tunnel", &format!("denied: {e}"));
+                        }
+                        Ok(()) => {
+                            let req: Result<tethercraft_proto::TunnelOpen, _> =
+                                session::parse_json(&env.payload);
+                            match req {
+                                Err(e) => {
+                                    audit(
+                                        store,
+                                        &auth.peer_id,
+                                        "tunnel",
+                                        &format!("bad open: {e}"),
+                                    );
+                                }
+                                Ok(o) => {
+                                    if tunnels.len() >= 16 {
+                                        let ack = tethercraft_proto::TunnelAck {
+                                            channel: o.channel,
+                                            ok: false,
+                                            error: "too many tunnels (max 16)".to_string(),
+                                        };
+                                        let _ = sess.send_envelope(&Envelope::new(
+                                            MessageKind::TunnelAck,
+                                            my_pub,
+                                            session::json_bytes(&ack).unwrap_or_default(),
+                                        ));
+                                    } else {
+                                        match open_tunnel(o.channel, &o.target, tun_tx.clone()) {
+                                            Err(e) => {
+                                                let ack = tethercraft_proto::TunnelAck {
+                                                    channel: o.channel,
+                                                    ok: false,
+                                                    error: format!("{e}"),
+                                                };
+                                                let _ = sess.send_envelope(&Envelope::new(
+                                                    MessageKind::TunnelAck,
+                                                    my_pub,
+                                                    session::json_bytes(&ack).unwrap_or_default(),
+                                                ));
+                                                audit(
+                                                    store,
+                                                    &auth.peer_id,
+                                                    "tunnel",
+                                                    &format!("open failed: {e}"),
+                                                );
+                                            }
+                                            Ok(tx) => {
+                                                tunnels.insert(o.channel, tx);
+                                                let ack = tethercraft_proto::TunnelAck {
+                                                    channel: o.channel,
+                                                    ok: true,
+                                                    error: String::new(),
+                                                };
+                                                let _ = sess.send_envelope(&Envelope::new(
+                                                    MessageKind::TunnelAck,
+                                                    my_pub,
+                                                    session::json_bytes(&ack).unwrap_or_default(),
+                                                ));
+                                                audit(
+                                                    store,
+                                                    &auth.peer_id,
+                                                    "tunnel",
+                                                    &format!(
+                                                        "open channel {} to {}",
+                                                        o.channel, o.target
+                                                    ),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    MessageKind::TunnelData => {
+                        let msg: Result<tethercraft_proto::TunnelBlock, _> =
+                            session::parse_json(&env.payload);
+                        match msg {
+                            Err(e) => {
+                                audit(store, &auth.peer_id, "tunnel", &format!("bad data: {e}"));
+                            }
+                            Ok(b) => match tunnels.get(&b.channel) {
+                                None => {
+                                    audit(
+                                        store,
+                                        &auth.peer_id,
+                                        "tunnel",
+                                        &format!("data for unknown channel {}", b.channel),
+                                    );
+                                }
+                                Some(tx) => match hex::decode(&b.data_hex) {
+                                    Err(_) => {
+                                        audit(store, &auth.peer_id, "tunnel", "bad hex");
+                                    }
+                                    Ok(bytes) => {
+                                        if tx.send(bytes).is_err() {
+                                            tunnels.remove(&b.channel);
+                                        }
+                                    }
+                                },
+                            },
+                        }
+                    }
+                    MessageKind::TunnelClose => {
+                        let msg: Result<tethercraft_proto::TunnelClose, _> =
+                            session::parse_json(&env.payload);
+                        if let Ok(c) = msg {
+                            close_tunnel(&mut tunnels, c.channel);
+                            audit(
+                                store,
+                                &auth.peer_id,
+                                "tunnel",
+                                &format!("closed channel {}", c.channel),
+                            );
+                        }
+                    }
                     _ => {
                         audit(
                             store,
@@ -382,6 +758,52 @@ pub fn serve_one(
                             &format!("unhandled: {:?}", env.kind),
                         );
                     }
+                }
+            }
+        }
+        // Async completions: finished execs and tunnel traffic get wrapped
+        // into envelopes here, on the only thread that owns the socket.
+        for done in exec_rx.try_iter() {
+            exec_running = false;
+            let _ = sess.send_envelope(&Envelope::new(
+                MessageKind::ExecDone,
+                my_pub,
+                session::json_bytes(&done).unwrap_or_default(),
+            ));
+            audit(
+                store,
+                &auth.peer_id,
+                "exec",
+                &format!("done req {} code {}", done.req_id, done.exit_code),
+            );
+        }
+        for msg in tun_rx.try_iter() {
+            match msg {
+                TunnelOut::Data(channel, bytes) => {
+                    let block = tethercraft_proto::TunnelBlock {
+                        channel,
+                        data_hex: hex::encode(&bytes),
+                    };
+                    let _ = sess.send_envelope(&Envelope::new(
+                        MessageKind::TunnelData,
+                        my_pub,
+                        session::json_bytes(&block).unwrap_or_default(),
+                    ));
+                }
+                TunnelOut::Closed(channel) => {
+                    close_tunnel(&mut tunnels, channel);
+                    let close = tethercraft_proto::TunnelClose { channel };
+                    let _ = sess.send_envelope(&Envelope::new(
+                        MessageKind::TunnelClose,
+                        my_pub,
+                        session::json_bytes(&close).unwrap_or_default(),
+                    ));
+                    audit(
+                        store,
+                        &auth.peer_id,
+                        "tunnel",
+                        &format!("remote closed channel {channel}"),
+                    );
                 }
             }
         }
@@ -459,6 +881,7 @@ mod tests {
             stop: stop.clone(),
             codec: "h264".to_string(),
             pin_key: None,
+            share_root: Some(std::env::temp_dir()),
         };
         let signing = SigningKey::from_bytes(&[7u8; 32]);
         let store = match tethercraft_store::Store::open_in_memory() {

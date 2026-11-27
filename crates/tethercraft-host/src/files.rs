@@ -14,6 +14,8 @@ pub struct DirEntry {
     pub name: String,
     pub is_dir: bool,
     pub size: u64,
+    /// Last-modified time, unix seconds. Zero when the platform withholds it.
+    pub mtime: u64,
 }
 
 pub struct FileManager {
@@ -54,10 +56,17 @@ impl FileManager {
                 .metadata()
                 .map_err(|e| TetherError::Invalid(format!("stat: {e}")))?;
             let name = entry.file_name().to_string_lossy().to_string();
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
             out.push(DirEntry {
                 name,
                 is_dir: meta.is_dir(),
                 size: meta.len(),
+                mtime,
             });
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
