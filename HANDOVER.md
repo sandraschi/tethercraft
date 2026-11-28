@@ -1,5 +1,5 @@
 ---
-updated: 2026-11-28T00:10:00+01:00
+updated: 2026-11-28T02:18:00+01:00
 agent: opencode-musespark
 status: in-progress
 tags: [tethercraft, rust, remote-desktop, tier2, relay, service, mcp, gui-board]
