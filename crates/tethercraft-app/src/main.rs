@@ -6,6 +6,8 @@ use serde_json::json;
 use tethercraft_core::TetherError;
 use tethercraft_net::{fingerprint_hex, fingerprint_words, generate_device_key, public_key_bytes};
 
+mod board;
+mod help;
 mod service;
 mod ui;
 
@@ -411,6 +413,7 @@ fn peer_list() -> Vec<ui::PeerCard> {
                 alias: r.alias.unwrap_or_default(),
                 addr: r.addr,
                 has_key: !r.pubkey_hex.trim().is_empty(),
+                tier: r.tier,
             })
             .collect(),
         Err(_) => Vec::new(),

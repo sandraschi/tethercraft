@@ -1,10 +1,10 @@
-//! L3 egui controller window (Tier 3 start).
+//! L3 egui controller window.
 //!
-//! Peer list sidebar, session view fed by the capture/codec path, an
-//! always-visible End session button while connected, Ctrl+wheel zoom, an
-//! audit tail, and the R1 install gate: a non-skippable full question with a
-//! 20-second wait before the answer buttons activate. Until the live run the
-//! frames are synthetic (`fake_frame`); the window, gates, and zoom are real.
+//! Window sections (Board, Session, Help) switch the central panel; the
+//! Board is the RustDesk-style peer kanban, Session shows the live stream,
+//! Help renders the operator guide. Includes the R1 install gate: a
+//! non-skippable full question with a 20-second wait before the answer
+//! buttons activate.
 
 use chrono::{DateTime, Utc};
 use eframe::egui;
@@ -13,51 +13,40 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use tethercraft_input::InputEvent;
 
+pub use super::board::{BoardCol, BoardState, PeerCard};
+use super::help::{render_help, HelpTopic};
+
 /// How long the R1 screen waits before the answer buttons activate.
 pub const ONBOARDING_WAIT_SECS: u64 = 20;
 /// Outgoing-only window after a yes/not-sure answer (matches core R1).
 pub const OUTGOING_ONLY_SECS: i64 = 24 * 60 * 60;
 
-/// One address-book row as shown on the peer board. `has_key` tells whether
-/// the host key is already pinned (green) or this would be first contact
-/// (amber): the same TOFU state the CLI prints as words.
-#[derive(Debug, Clone)]
-pub struct PeerCard {
-    pub id: String,
-    pub alias: String,
-    pub addr: Option<String>,
-    pub has_key: bool,
+/// Window sections. The board is the RustDesk-style home; Session shows the
+/// live stream; Help renders the operator guide inside the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppSection {
+    Board,
+    Session,
+    Help,
 }
 
-impl PeerCard {
-    pub fn display_name(&self) -> String {
-        if self.alias.is_empty() {
-            self.id.clone()
-        } else {
-            self.alias.clone()
-        }
-    }
+impl AppSection {
+    pub const ALL: [AppSection; 3] = [AppSection::Board, AppSection::Session, AppSection::Help];
 
-    pub fn matches(&self, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
+    pub fn title(self) -> &'static str {
+        match self {
+            AppSection::Board => "Board",
+            AppSection::Session => "Session",
+            AppSection::Help => "Help",
         }
-        let q = query.to_lowercase();
-        self.id.to_lowercase().contains(&q)
-            || self.alias.to_lowercase().contains(&q)
-            || self
-                .addr
-                .as_deref()
-                .unwrap_or("")
-                .to_lowercase()
-                .contains(&q)
     }
 }
 
 pub struct ControllerUi {
-    pub peers: Vec<PeerCard>,
+    pub board: BoardState,
     pub selected: Option<String>,
-    pub search: String,
+    pub section: AppSection,
+    pub help_topic: HelpTopic,
     pub zoom: f32,
     pub session_active: bool,
     pub recording: bool,
@@ -201,9 +190,10 @@ impl ControllerUi {
         marker_path: Option<PathBuf>,
     ) -> Self {
         Self {
-            peers,
+            board: BoardState::new(peers),
             selected: None,
-            search: String::new(),
+            section: AppSection::Board,
+            help_topic: HelpTopic::QuickStart,
             zoom: 1.0,
             session_active: false,
             recording: false,
@@ -235,6 +225,7 @@ impl ControllerUi {
         }
         self.session_active = true;
         self.recording = true;
+        self.section = AppSection::Session;
         self.push_audit("session started (local recording on)");
     }
 
@@ -248,6 +239,7 @@ impl ControllerUi {
         self.last_sent_pos = None;
         self.live_dead = false;
         self.source = FrameSource::Synthetic;
+        self.section = AppSection::Board;
         self.push_audit("session ended by local person");
     }
 
@@ -299,6 +291,27 @@ impl ControllerUi {
         self.live_dead = false;
         self.session_active = true;
         self.recording = true;
+        self.section = AppSection::Session;
+    }
+
+    /// Switch window sections. Session needs a live session; Help and Board
+    /// are always available.
+    pub fn show_section(&mut self, section: AppSection) {
+        if section == AppSection::Session && !self.session_active {
+            return;
+        }
+        self.section = section;
+    }
+
+    /// Drop queued frames while the session runs in the background (the user
+    /// is on the Board or Help tab). The channel is unbounded, so never
+    /// letting it fill is what keeps background sessions cheap.
+    fn drain_background_frames(&mut self) {
+        if self.session_active && self.section != AppSection::Session {
+            if let FrameSource::Live(live) = &mut self.source {
+                while live.frames.try_recv().is_ok() {}
+            }
+        }
     }
 
     fn paint_frame(&mut self, ctx: &egui::Context) {
@@ -518,6 +531,20 @@ impl eframe::App for ControllerUi {
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
+                // Window sections, fleet-style horizontal tabs.
+                for tab in AppSection::ALL {
+                    let enabled = tab != AppSection::Session || self.session_active;
+                    if ui
+                        .add_enabled(
+                            enabled,
+                            egui::Button::selectable(self.section == tab, tab.title()),
+                        )
+                        .clicked()
+                    {
+                        self.show_section(tab);
+                    }
+                }
+                ui.separator();
                 if self.session_active {
                     let end = egui::Button::new("End session").fill(egui::Color32::DARK_RED);
                     if ui.add(end).clicked() {
@@ -547,106 +574,149 @@ impl eframe::App for ControllerUi {
             .width_range(150.0..=360.0)
             .show(ctx, |ui| {
                 ui.heading("Peers");
-                ui.text_edit_singleline(&mut self.search);
+                ui.text_edit_singleline(&mut self.board.filter);
                 ui.label(format!(
                     "{} of {} shown",
-                    self.peers
-                        .iter()
-                        .filter(|p| p.matches(&self.search))
-                        .count(),
-                    self.peers.len()
+                    self.board.total_shown(),
+                    self.board.cards.len()
                 ));
                 if ui.button("Connect").clicked() {
+                    self.show_section(AppSection::Session);
                     self.start_session();
                 }
                 ui.separator();
                 ui.small(
                     "Click a card to select. Double-click a card (or press Connect) to start.",
                 );
-                if self.search.is_empty() {
-                    ui.small("Type above to filter by name, id, or address.");
+                if self.board.filter.is_empty() {
+                    ui.small("Type above to filter by name, id, tier, or address.");
                 }
             });
 
-        // RustDesk-style peer board: one card per peer, green pin when the
-        // host key is already recorded, amber on first contact. In-window
-        // dialing is not wired yet, so Connect starts the local session
-        // exactly like the sidebar button always did.
+        // Background drain: the user can browse the Board or Help while a
+        // session runs; queued frames are dropped so the channel stays empty.
+        self.drain_background_frames();
+
         let mut pick: Option<String> = None;
         let mut go = false;
         egui::CentralPanel::default().show(ctx, |ui| {
-            if self.session_active {
-                self.paint_frame(ctx);
-                if let Some(tex) = &self.texture {
-                    let size = tex.size_vec2() * self.zoom;
-                    let resp = ui.image((tex.id(), size));
-                    self.last_rect = Some(resp.rect);
+            match self.section {
+                AppSection::Help => {
+                    render_help(ui, &mut self.help_topic);
                 }
-                if self.decode_errors > 0 {
-                    ui.label(format!("decode errors: {}", self.decode_errors));
+                AppSection::Session if self.session_active => {
+                    self.paint_frame(ctx);
+                    if let Some(tex) = &self.texture {
+                        let size = tex.size_vec2() * self.zoom;
+                        let resp = ui.image((tex.id(), size));
+                        self.last_rect = Some(resp.rect);
+                    }
+                    if self.decode_errors > 0 {
+                        ui.label(format!("decode errors: {}", self.decode_errors));
+                    }
+                    if self.live_dead {
+                        ui.colored_label(
+                            egui::Color32::YELLOW,
+                            "Remote stream ended. Press End session, then Connect again.",
+                        );
+                    }
+                    self.forward_input(ctx);
                 }
-                if self.live_dead {
-                    ui.colored_label(
-                        egui::Color32::YELLOW,
-                        "Remote stream ended. Press End session, then Connect again.",
-                    );
+                AppSection::Session => {
+                    ui.label("No active session yet.");
+                    ui.label("Pick a peer card and press Connect, or run:");
+                    ui.monospace("tethercraft connect <peer> [--headless out.ppm]");
                 }
-                self.forward_input(ctx);
-            } else {
-                egui::ScrollArea::both().show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        let query = self.search.clone();
-                        let selected = self.selected.clone();
-                        for peer in self.peers.iter().filter(|p| p.matches(&query)) {
-                            let is_sel = selected.as_deref() == Some(peer.id.as_str());
-                            let dot = if peer.has_key {
-                                egui::Color32::GREEN
-                            } else {
-                                egui::Color32::YELLOW
-                            };
-                            let frame = egui::Frame::group(ui.style())
-                                .stroke(if is_sel {
-                                    egui::Stroke::new(2.0_f32, egui::Color32::LIGHT_BLUE)
-                                } else {
-                                    ui.style().visuals.widgets.noninteractive.bg_stroke
-                                })
-                                .show(ui, |ui| {
-                                    ui.set_min_size(egui::vec2(170.0, 104.0));
-                                    ui.horizontal(|ui| {
-                                        ui.colored_label(dot, "●");
-                                        ui.strong(peer.display_name());
-                                    });
-                                    ui.monospace(&peer.id);
-                                    ui.small(
-                                        peer.addr
-                                            .clone()
-                                            .unwrap_or_else(|| "no address yet".to_string()),
-                                    );
-                                    ui.small(if peer.has_key {
-                                        "key pinned"
-                                    } else {
-                                        "first contact: verify words"
-                                    });
-                                    if ui.small_button("Connect").clicked() {
-                                        pick = Some(peer.id.clone());
-                                        go = true;
-                                    }
+                AppSection::Board => {
+                    // Peer kanban: Ready / First contact / Needs address
+                    // columns, cards sorted by name, filter from the sidebar.
+                    let mut connect_id: Option<String> = None;
+                    let selected = self.selected.clone();
+                    let empty_book = self.board.cards.is_empty();
+                    ui.columns(BoardCol::ALL.len(), |cols| {
+                        for (i, col) in BoardCol::ALL.iter().enumerate() {
+                            let cards = self.board.visible_in(*col);
+                            let count = self.board.count_in(*col);
+                            cols[i].group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.strong(col.title());
+                                    ui.small(format!("({count})"));
                                 });
-                            let resp = frame.response.interact(egui::Sense::click());
-                            if resp.clicked() {
-                                pick = Some(peer.id.clone());
-                            }
-                            if resp.double_clicked() {
-                                pick = Some(peer.id.clone());
-                                go = true;
-                            }
+                                ui.small(col.hint());
+                                ui.separator();
+                                egui::ScrollArea::vertical()
+                                    .id_salt(format!("board_col_{i}"))
+                                    .max_height(420.0)
+                                    .show(ui, |ui| {
+                                        for peer in cards {
+                                            let is_sel =
+                                                selected.as_deref() == Some(peer.id.as_str());
+                                            let dot = if peer.has_key {
+                                                egui::Color32::GREEN
+                                            } else {
+                                                egui::Color32::YELLOW
+                                            };
+                                            let frame = egui::Frame::group(ui.style())
+                                                .stroke(if is_sel {
+                                                    egui::Stroke::new(
+                                                        2.0_f32,
+                                                        egui::Color32::LIGHT_BLUE,
+                                                    )
+                                                } else {
+                                                    ui.style()
+                                                        .visuals
+                                                        .widgets
+                                                        .noninteractive
+                                                        .bg_stroke
+                                                })
+                                                .show(ui, |ui| {
+                                                    ui.set_min_size(egui::vec2(170.0, 132.0));
+                                                    ui.horizontal(|ui| {
+                                                        ui.colored_label(dot, "●");
+                                                        ui.strong(peer.display_name());
+                                                    });
+                                                    ui.monospace(&peer.id);
+                                                    ui.small(peer.addr.clone().unwrap_or_else(
+                                                        || "no address yet".to_string(),
+                                                    ));
+                                                    ui.small(format!("tier: {}", peer.tier));
+                                                    ui.small(if peer.has_key {
+                                                        "key pinned"
+                                                    } else {
+                                                        "first contact: verify words"
+                                                    });
+                                                    ui.horizontal(|ui| {
+                                                        if ui.small_button("Connect").clicked() {
+                                                            pick = Some(peer.id.clone());
+                                                            go = true;
+                                                        }
+                                                        if ui.small_button("Copy ID").clicked() {
+                                                            connect_id = Some(peer.id.clone());
+                                                        }
+                                                    });
+                                                });
+                                            let resp =
+                                                frame.response.interact(egui::Sense::click());
+                                            if resp.clicked() {
+                                                pick = Some(peer.id.clone());
+                                            }
+                                            if resp.double_clicked() {
+                                                pick = Some(peer.id.clone());
+                                                go = true;
+                                            }
+                                        }
+                                    });
+                            });
                         }
                     });
-                    if self.peers.is_empty() {
+                    if let Some(id) = connect_id {
+                        ui.ctx().copy_text(id);
+                    }
+                    if empty_book {
                         ui.label("Address book is empty. Add a peer first:");
                         ui.monospace("tethercraft book add <peer> <host-key-hex> --addr host:port");
                     }
-                });
+                }
             }
         });
         if let Some(id) = pick {
@@ -745,6 +815,7 @@ mod tests {
             alias: String::new(),
             addr: None,
             has_key: false,
+            tier: "stranger".to_string(),
         }
     }
 
@@ -811,13 +882,30 @@ mod tests {
             alias: "Goliath".to_string(),
             addr: Some("127.0.0.1:21120".to_string()),
             has_key: true,
+            tier: "trusted_helper".to_string(),
         };
         assert!(wired.matches(""));
         assert!(wired.matches("gol"));
         assert!(wired.matches("127.0.0"));
+        assert!(wired.matches("trusted"));
         assert!(!wired.matches("zebra"));
         wired.alias = String::new();
         assert!(wired.display_name() == "goliath");
+    }
+
+    #[test]
+    fn sections_gate_session_tab() {
+        let mut ui = ControllerUi::new(vec![card("p1")], false, false, None);
+        assert!(ui.section == AppSection::Board);
+        ui.show_section(AppSection::Session);
+        assert!(ui.section == AppSection::Board);
+        ui.show_section(AppSection::Help);
+        assert!(ui.section == AppSection::Help);
+        ui.select("p1");
+        ui.start_session();
+        assert!(ui.section == AppSection::Session);
+        ui.end_session();
+        assert!(ui.section == AppSection::Board);
     }
 
     #[test]
