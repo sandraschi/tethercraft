@@ -7,12 +7,17 @@ tags: [tethercraft, rust, remote-desktop, tier2, relay, service, mcp, gui-board]
 
 ## What's happening right now
 
-RustDesk-style peer board is live in the egui controller: cards with alias,
-id, address, and a green pinned-key / amber first-contact dot, search
-filtering by name/id/address, click to select, double-click (or Connect) to
-start. Stacked on another agent's zoom/sidebar commit; no conflicts. GUI
-dialing from the window (password prompt plus background handshake) is still
-open, as is the TOFU-notice surface.
+Window has Board, Session, and Help sections now (top tabs): the peer
+kanban moved into a `board.rs` module (Ready / First contact / Needs an
+address columns, filter, sorted cards, tier badges, Copy ID), the operator
+guide lives in `help.rs` with testable ASCII-only topics, and background
+sessions drain frames while the user browses. Craft launchers vendored via
+the fleet sync script: `start.ps1`/`start.bat` (smoke passes: builds plus
+CLI status), `scripts/` configs, xtask, installer files. Floor check is
+honestly off (Tier 3 workstation chrome not built); docs stack added
+(`docs/` hub, TOOLS, CONFIGURATION, DEVELOPMENT, TROUBLESHOOTING) and the
+README/HELP GUI sections updated. Earlier: RustDesk-style peer cards with
+search, pinned-key dots, double-click connect.
 
 Tier 2 command bus is live over real sessions on loopback: file transfer
 (list/get/put/rename/rm/mkdir/hash), folder sync planner with remote diff,
@@ -35,6 +40,13 @@ check, whole workspace tests: 114 passed): `PeerCard` with
 addr plus pinned-key state, search box with result count, card grid with
 selection ring, per-card Connect plus double-click to start, empty-book hint
 with the `book add` command. README Controller UI section updated.
+
+Kanban/sections/help/docs/launchers on main, all gates green (clippy with
+`-D warnings`, fmt check, whole workspace tests: 123 passed,
+`start.ps1 -Smoke` ok): `board.rs` (columns, filter, sort, tests),
+`help.rs` (6 topics, ASCII and coverage tests), top section tabs with
+session gating plus background frame drain, `docs/` stack and README/HELP
+updates, vendored craft scaffold with Floor honestly off.
 
 Five commits on main, all gates green (clippy with `-D warnings`, fmt check,
 whole workspace tests: 112 passed): live session verbs, relay bridge plus
