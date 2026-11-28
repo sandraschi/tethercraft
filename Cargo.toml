@@ -12,6 +12,7 @@ members = [
   "crates/tethercraft-mcp",
   "crates/tethercraft-app",
   "crates/tethercraft-probe",
+    "xtask",
 ]
 resolver = "2"
 
