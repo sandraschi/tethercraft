@@ -17,7 +17,8 @@ use tethercraft_store::Store;
 fn tool_list() -> Value {
     json!({
         "tools": [
-            {"name": "status", "description": "daemon and session count (read-only)"},
+            {"name": "status", "description": "daemon, E2E cipher, and session count (read-only)"},
+            {"name": "capabilities", "description": "supported vs. unsupported use cases, R1-R7 invariants, E2E transport (read-only)"},
             {"name": "peers", "description": "address book peers (read-only)"},
             {"name": "peer_info", "description": "one peer row (read-only)"},
             {"name": "sessions", "description": "open live sessions (read-only)"},
@@ -172,12 +173,31 @@ fn handle(state: &mut McpState, method: &str, params: &Value) -> Value {
         "status" => {
             let peers = state.store.list_peers().map(|p| p.len()).unwrap_or(0);
             ok_result(json!({
-                "tier": 2,
-                "transport": "native-session",
+                "tier": 3,
+                "transport": "native-session-e2e",
+                "e2e_cipher": "chacha20-poly1305",
                 "peers": peers,
                 "sessions": state.sessions.len()
             }))
         }
+        "capabilities" => ok_result(json!({
+            "transport": "SPAKE2 PAKE + ChaCha20-Poly1305 E2E (direct TCP and --via relay)",
+            "supported_use_cases": [
+                "own_machines_lan_tailscale",
+                "family_it_support_with_r1_r7",
+                "scripted_cli_and_mcp_automation",
+                "self_hosted_e2e_relay"
+            ],
+            "unsupported_use_cases": [
+                "onboarding_free_quicksupport_stranger_control",
+                "stealth_or_hidden_tray",
+                "silent_consumer_install_or_rmm_mdm",
+                "stranger_screen_blanking",
+                "public_vendor_cloud_relay",
+                "4k120_hdr_game_streaming"
+            ],
+            "scam_resistance": "R1-R7 enforced on host"
+        })),
         "peers" => match state.store.list_peers() {
             Ok(p) => ok_result(json!(p)),
             Err(e) => json!({"error": e.to_string()}),

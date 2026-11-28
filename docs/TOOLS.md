@@ -1,12 +1,15 @@
-# CLI tools reference
+# CLI and MCP tools reference
 
 Running `tethercraft` with no subcommand opens the controller window
 (same as `tethercraft gui`): that is what double-click, `start.bat`, and
-shortcuts execute.
+shortcuts execute. Clicking Connect (or double-clicking a peer card) opens the
+in-window dial modal with masked password prompt, optional `--via` relay, and
+in-window TOFU banner on first contact.
 
 Every verb supports `--json` and the global `--password-file` (plus `--via`
 for relay dialing on session verbs). Passwords never go on the command line.
-Session verbs dial through `live_session`: TOFU on first contact (loud
+Session verbs dial through `live_session` with SPAKE2 PAKE + ChaCha20-Poly1305
+E2E encryption (including over `--via` relays): TOFU on first contact (loud
 warning, verify the fingerprint words out of band), pinned key after that,
 `--via` requires a known key.
 
@@ -54,3 +57,26 @@ warning, verify the fingerprint words out of band), pinned key after that,
 
 `update-check` verifies a metadata signature before reporting; it never
 auto-installs.
+
+## MCP server tools (`tethercraft-mcp`, stdio JSON-RPC)
+
+Read tools are open. Every mutating tool requires `confirm: true`, is enforced
+per-message on the host, and is written to the local audit log. Passwords come
+from `password_file` (never inline params).
+
+| Tool | Access | Notes |
+|---|---|---|
+| `status` | read-only | Tier, E2E cipher (`chacha20-poly1305`), peer count, open session count |
+| `capabilities` | read-only | Supported vs. unsupported use cases, R1-R7 invariants, E2E transport summary |
+| `peers`, `peer_info` | read-only | Address book rows (id, alias, addr, tier, key state) |
+| `sessions` | read-only | Currently open live session peer ids |
+| `audit` | read-only | Local audit log tail (`limit`, default 50, max 500) |
+| `connect` | `confirm: true` | Dial a peer via SPAKE2 + E2E (`password_file`, optional `via`), hold live session |
+| `disconnect` | open | Send `SessionEnd` and close a live session |
+| `screenshot` | `confirm: true` | Save one decoded frame to a local path |
+| `input` | `confirm: true` | Inject permission-gated input event |
+| `exec` | `confirm: true` | Run a command over the terminal channel (30 s kill, 64 KiB cap) |
+| `file_list`, `file_get`, `file_put`, `file_rename`, `file_rm`, `file_mkdir`, `file_hash` | `confirm: true` | Jailed share-root file operations |
+| `chat_send` | `confirm: true` | Send session chat text |
+| `tunnel_open`, `tunnel_send`, `tunnel_close` | `confirm: true` | TCP tunnel channels over the E2E session |
+| `restart`, `shutdown`, `lock` | `confirm: true` | Host power controls (permission-gated) |

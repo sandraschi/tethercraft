@@ -82,3 +82,46 @@ TetherCraft cannot make social engineering impossible, but it refuses to be an e
 | Full CLI + MCP automation bus | No | Minimal CLI | No | Deployment CLI only | Yes (shared host policy bus) |
 | Anti-scam defaults (R1-R7) | Weak (QuickSupport) | Weak | Weak | Weak (ad-hoc full control) | Built into core + host policy |
 | Maturity (2026-11) | Mature | Mature | Mature | Mature | Pre-release (`v0.9.0`, Windows Tier 1-3 active) |
+
+---
+
+## 6. QuickSupport, stealth, and privacy mode: legitimate uses vs. abuse
+
+These features have real enterprise and power-user value, which is why commercial tools ship them. TetherCraft restricts or forbids them in consumer builds because **the exact same mechanics are what scammers, stalkerware, and ransomware operators exploit**:
+
+| Feature | Legitimate use | Abuse vector | TetherCraft stance |
+|---|---|---|---|
+| **QuickSupport (single-exe ad-hoc)** | Customer runs one portable exe for a 10-minute vendor fix without installing a background service or needing admin rights. | Scammer talks a victim into running it and gets full mouse, keyboard, file, and blanking control in under 20 seconds. | `tethercraft.exe` is already a portable single exe, **but R1 (20 s gate) and R2 (Stranger = view-only) are never skipped**. Helpdesks can still view and guide verbally. |
+| **Screen blanking (Privacy Mode)** | Working remotely on your own office PC in an open-plan office so passers-by cannot read your screen; kiosk maintenance. | **#1 banking-scam weapon:** Scammer blanks granny's screen ("Windows is updating") while wiring money from her open bank tab. | **Blocked for Strangers (R2).** Planned only for pre-enrolled `Managed`/`TrustedHelper` peers (Tier 4), with a local physical escape key. |
+| **Silent / unattended install** | Corporate IT pushing an agent to 500 company laptops via Intune/GPO. | Signed RMM-as-malware (ransomware persistence) and stalkerware. | **No silent consumer install.** `tethercraft service install` requires local admin and explicit config editing; default grants nothing. |
+| **Hidden tray / no indicator** | Locked-down kiosks where users should not close the daemon. | Covert surveillance (stalkerware). | **Hard non-goal (PRD sec 5).** Active desktop sessions always show a visible indicator and write a local audit log. |
+
+See [USE_CASES.md](USE_CASES.md) for the full supported vs. unsupported use-case breakdown.
+
+---
+
+## 7. Feature gaps vs. competitors: what deserves a clean-room filch
+
+What RustDesk, AnyDesk, TeamViewer, LogMeIn, Splashtop, and Parsec have that TetherCraft does **not** yet support, ranked by whether we should build a clean-room version:
+
+### High-value features worth building (clean-room)
+
+1. **Hardware H.264 / H.265 / AV1 via OS APIs (Windows Media Foundation MFT, Apple VideoToolbox):** Automatically routes to NVENC (NVIDIA), AMF (AMD), and Quick Sync (Intel) with software OpenH264 fallback, plus adaptive bitrate/resolution. *(RustDesk, AnyDesk, Parsec)*
+2. **Multi-monitor switcher + "show all" + remember last monitor per peer:** Essential for multi-screen workstations. *(RustDesk, AnyDesk, TeamViewer)*
+3. **Virtual display driver for headless Windows/Linux hosts:** Lets headless homelab boxes stream at arbitrary resolution without an HDMI dummy plug. *(RustDesk, Parsec)*
+4. **Windows Ctrl+Alt+Del (SAS) + logon-screen / UAC secure-desktop access via the Windows service:** Needed for real Windows admin sessions. *(TeamViewer, AnyDesk, RustDesk)*
+5. **Live remote system audio (Opus):** Hearing alerts, media, or calls from the remote host. *(RustDesk, AnyDesk, Splashtop, Parsec)*
+6. **Clipboard file copy/paste + drag-and-drop onto the session canvas:** Faster day-to-day file moves than opening a file browser. *(AnyDesk, TeamViewer, RustDesk)*
+7. **Session whiteboard / laser-pointer annotation overlay:** Huge win for **view-only family tech support** - point to the exact button on grandma's screen without taking over her mouse. *(AnyDesk, TeamViewer)*
+8. **Remote cursor rendering + "show local cursor" + relative mouse mode:** Fixes cursor lag and enables 3D/CAD/phone-trackpad workflows. *(AnyDesk, RustDesk, Parsec)*
+9. **Session tabs / multiple simultaneous sessions in one window:** Operate two machines side by side. *(AnyDesk, RustDesk)*
+10. **UDP hole punching (direct P2P NAT traversal) + WebSocket/proxy fallback:** Cuts latency and relay bandwidth when both sides are behind NAT. *(RustDesk, AnyDesk)*
+11. **LAN auto-discovery (mDNS / local broadcast):** Zero-config discovery of your own machines on the same Wi-Fi/LAN. *(RustDesk, AnyDesk)*
+
+### Features we intentionally skip (anti-features / abuse vectors)
+
+- Onboarding-free QuickSupport full-control executable (R7).
+- Covert/stealth mode, hidden tray, silent consumer install (PRD sec 5).
+- Built-in RMM/MDM software inventory and policy push (PRD sec 5).
+- Mandatory vendor cloud account or SaaS licensing server.
+- 4K120 HDR competitive game streaming (well served by Moonlight/Sunshine and Parsec).
