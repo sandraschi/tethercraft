@@ -110,3 +110,7 @@ SPAKE2 PAKE, QUIC with pinned raw keys, WGC capture with DXGI fallback, one hard
 encoder plus VP9 software fallback, view/control and view-only, host-enforced
 permissions, clipboard text and images, OTP and permanent password, address book,
 WOL, screenshot, audit log, CLI verbs with `--json`, MCP read tools.
+
+## Handovers
+
+One new file per handover at the repo root: `HANDOVER_<YYYY-MM-DD>_<HHMM>_<agent>_<topic>.md`. Never overwrite, edit, rename or delete a handover you did not write, and never write a bare `HANDOVER.md`. Read the newest one and everything from the last 24 hours before starting. Standard: `mcp-central-docs/standards/HANDOVER_STANDARD.md` (v2.0).
