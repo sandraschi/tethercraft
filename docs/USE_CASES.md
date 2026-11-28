@@ -30,6 +30,9 @@ or surveillance weapons.
 ### E. Mobile controller on the go (Tier 5, planned)
 - iOS (controller-only via thin SwiftUI + Rust FFI + hardware `VideoToolbox` H.264, see [IOS_PLAN.md](IOS_PLAN.md)) and Android (controller + host).
 
+### F. Low-latency game streaming (Tier 4/5, under development / TODO)
+- One differentiator RustDesk does not have: a Sunshine/Moonlight-class **Performance / Gaming Mode** built on top of our upcoming GPU hardware encode (zero-copy D3D11 -> MFT/NVENC), QUIC/UDP low-latency transport, WASAPI -> Opus audio, relative mouse, and virtual gamepad passthrough. Available only to pre-enrolled `Managed`/`TrustedHelper` peers. See [GAME_STREAMING.md](GAME_STREAMING.md).
+
 ---
 
 ## 2. Legitimate use cases we restrict or intentionally DO NOT support
@@ -58,6 +61,3 @@ These use cases are real in corporate IT or gaming, but supporting them in consu
 
 ### E. Public SaaS cloud relay operated by the project (NOT supported)
 - **Why:** Operating a free public relay is what creates the recurring cloud bill that eventually forces commercial remote-desktop vendors into money-grabs, nag screens, and account lock-in. TetherCraft ships the relay binary (`tethercraft server`) so you run your own or use Tailscale/LAN directly.
-
-### F. 4K120 HDR / competitive game streaming (NOT a target)
-- **Why:** Ultra-low-latency game streaming with gamepad passthrough and HDR tone-mapping is already well served by Moonlight/Sunshine and Parsec. TetherCraft optimizes for crisp desktop text, low bandwidth, strong crypto, and CLI/MCP automation.

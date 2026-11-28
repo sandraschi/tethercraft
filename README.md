@@ -13,7 +13,9 @@ native protocol only, Windows only. Clean room: no RustDesk source is opened.
 
 ## Why TetherCraft
 
-Remote desktop tools suffer from two repeating problems: **consecutive money-grabs** by formerly free or cheap tools (LogMeIn killing its free tier, TeamViewer locking out family-support users as "commercial", AnyDesk following the same path), and **tech-support scam takeovers** where scammers talk elderly relatives into installing signed, zero-friction remote-control apps to drain their bank accounts. RustDesk broke the proprietary cloud trap with open-source self-hosting, but remains AGPL/Pro-split, GUI-first (no full CLI or MCP bus), and ad-hoc-stranger friendly. TetherCraft is a clean-room MIT/Apache-2.0 sibling with a unified GUI/CLI/MCP command bus, E2E encryption over relays, and built-in R1-R7 anti-scam defaults. Full breakdown: [docs/COMPETITIVE_ANALYSIS.md](docs/COMPETITIVE_ANALYSIS.md).
+![TetherCraft 4-panel Kaffeehaus story](docs/assets/tethercraft-story.jpg)
+
+Remote desktop tools suffer from two repeating problems: **consecutive money-grabs** by formerly free or cheap tools (LogMeIn killing its free tier, TeamViewer locking out family-support users as "commercial", AnyDesk following the same path), and **tech-support scam takeovers** where scammers talk elderly relatives into installing signed, zero-friction remote-control apps to drain their bank accounts. RustDesk broke the proprietary cloud trap with open-source self-hosting, but remains AGPL/Pro-split, GUI-first (no full CLI or MCP bus), and ad-hoc-stranger friendly, with no game streaming. TetherCraft is a clean-room MIT/Apache-2.0 sibling with a unified GUI/CLI/MCP command bus, E2E encryption over relays, built-in R1-R7 anti-scam defaults, and low-latency **Game Streaming** on the roadmap (under development / TODO, [docs/GAME_STREAMING.md](docs/GAME_STREAMING.md)). Full breakdown: [docs/COMPETITIVE_ANALYSIS.md](docs/COMPETITIVE_ANALYSIS.md) and [docs/USE_CASES.md](docs/USE_CASES.md).
 
 ## Status
 
@@ -28,7 +30,10 @@ Pre-release `v0.9.0` binary (`tethercraft.exe`, unsigned lab use) and source bui
 | Doc | Contents |
 |---|---|
 | [INSTALL.md](INSTALL.md) | Pre-release binary, source build, Windows host service, MCP setup, uninstall |
-| [docs/COMPETITIVE_ANALYSIS.md](docs/COMPETITIVE_ANALYSIS.md) | Remote-app money-grabs, the RustDesk story, tech-support scam mitigation (R1-R7), comparison matrix |
+| [docs/COMPETITIVE_ANALYSIS.md](docs/COMPETITIVE_ANALYSIS.md) | Remote-app money-grabs, the RustDesk story, tech-support scam mitigation (R1-R7), feature gaps |
+| [docs/USE_CASES.md](docs/USE_CASES.md) | Supported use cases vs. restricted/unsupported ones (QuickSupport, stealth, privacy mode) |
+| [docs/GAME_STREAMING.md](docs/GAME_STREAMING.md) | Tier 4/5 game streaming plan (UNDER DEVELOPMENT / TODO) |
+| [docs/IOS_PLAN.md](docs/IOS_PLAN.md) | Tier 5 iOS controller plan (SwiftUI + Rust FFI + VideoToolbox) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Crate map, SPAKE2 + ChaCha20-Poly1305 E2E crypto, persistent WGC + H.264 pipeline |
 | [HELP.md](HELP.md) | Operator quickstart tour, scam-resistance summary (R1-R7), crate sub-README links |
 | [docs/TOOLS.md](docs/TOOLS.md) | Full CLI verb reference, flags, required permissions |
@@ -77,7 +82,7 @@ comparison, not a certificate authority.
 
 ## Layout
 
-> **Operator Guide & Crate Docs:** See [`HELP.md`](HELP.md) for the quickstart tour, scam-resistance summary (R1–R7), and links to all 12 crate sub-READMEs (`crates/tethercraft-*/README.md`). The [`docs/`](docs/README.md) stack has the CLI reference ([TOOLS](docs/TOOLS.md)), [configuration](docs/CONFIGURATION.md), [development](docs/DEVELOPMENT.md), and [troubleshooting](docs/TROUBLESHOOTING.md) guides.
+> **Operator Guide & Crate Docs:** See [`HELP.md`](HELP.md) for the quickstart tour, scam-resistance summary (R1-R7), and links to all 12 crate sub-READMEs (`crates/tethercraft-*/README.md`). The [`docs/`](docs/README.md) stack has the CLI reference ([TOOLS](docs/TOOLS.md)), [configuration](docs/CONFIGURATION.md), [development](docs/DEVELOPMENT.md), and [troubleshooting](docs/TROUBLESHOOTING.md) guides.
 
 | Crate | Role |
 |---|---|

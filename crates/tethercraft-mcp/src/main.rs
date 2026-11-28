@@ -188,13 +188,16 @@ fn handle(state: &mut McpState, method: &str, params: &Value) -> Value {
                 "scripted_cli_and_mcp_automation",
                 "self_hosted_e2e_relay"
             ],
+            "planned_use_cases": [
+                "low_latency_game_streaming_todo",
+                "ios_and_android_controllers"
+            ],
             "unsupported_use_cases": [
                 "onboarding_free_quicksupport_stranger_control",
                 "stealth_or_hidden_tray",
                 "silent_consumer_install_or_rmm_mdm",
                 "stranger_screen_blanking",
-                "public_vendor_cloud_relay",
-                "4k120_hdr_game_streaming"
+                "public_vendor_cloud_relay"
             ],
             "scam_resistance": "R1-R7 enforced on host"
         })),

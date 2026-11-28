@@ -35,8 +35,8 @@ Pure-Rust remote desktop with native wire protocol, SPAKE2 authentication, ChaCh
 
 ## 4. Use Cases (Supported vs. Not Supported)
 
-- **Supported:** Own machines over LAN/Tailscale, safe family IT support (with R1-R7 guardrails), scripted CLI and confirm-gated MCP agent automation, self-hosted E2E NAT relay (`tethercraft server`), and planned Tier 5 iOS/Android mobile controllers ([docs/IOS_PLAN.md](docs/IOS_PLAN.md)).
-- **Restricted / Not Supported:** Onboarding-free full-control QuickSupport for strangers, covert/stealth monitoring or hidden tray, silent consumer install / RMM-MDM, screen blanking for Strangers, public vendor-operated cloud relay, and 4K120 HDR game streaming. Full rationale and competitive comparison in [docs/USE_CASES.md](docs/USE_CASES.md) and [docs/COMPETITIVE_ANALYSIS.md](docs/COMPETITIVE_ANALYSIS.md).
+- **Supported:** Own machines over LAN/Tailscale, safe family IT support (with R1-R7 guardrails), scripted CLI and confirm-gated MCP agent automation, self-hosted E2E NAT relay (`tethercraft server`), planned Tier 5 iOS/Android mobile controllers ([docs/IOS_PLAN.md](docs/IOS_PLAN.md)), and planned Tier 4/5 low-latency **Game Streaming** (under development / TODO, [docs/GAME_STREAMING.md](docs/GAME_STREAMING.md)).
+- **Restricted / Not Supported:** Onboarding-free full-control QuickSupport for strangers, covert/stealth monitoring or hidden tray, silent consumer install / RMM-MDM, screen blanking for Strangers, and public vendor-operated cloud relay. Full rationale and competitive comparison in [docs/USE_CASES.md](docs/USE_CASES.md) and [docs/COMPETITIVE_ANALYSIS.md](docs/COMPETITIVE_ANALYSIS.md).
 
 ## 5. Crate Documentation
 

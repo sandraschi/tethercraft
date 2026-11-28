@@ -11,6 +11,7 @@ Start here: [README.md](../README.md) (status, quickstart, feature matrix),
 | [USE_CASES.md](USE_CASES.md) | Supported use cases vs. restricted/unsupported ones (QuickSupport, stealth, silent install, privacy mode) |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Crate map, SPAKE2 + ChaCha20-Poly1305 E2E flow, persistent WGC + H.264 pipeline |
 | [IOS_PLAN.md](IOS_PLAN.md) | Tier 5 iOS controller plan: thin SwiftUI shell + Rust FFI + VideoToolbox hardware H.264 |
+| [GAME_STREAMING.md](GAME_STREAMING.md) | Tier 4/5 game streaming plan (UNDER DEVELOPMENT / TODO): zero-copy GPU encode, QUIC/UDP, audio, gamepad |
 | [TOOLS.md](TOOLS.md) | Every CLI verb, flags, required permission, examples |
 | [CONFIGURATION.md](CONFIGURATION.md) | Password files, identity, store, ports, service config |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Build, gates, workspace layout, commit discipline |

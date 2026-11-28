@@ -1,5 +1,7 @@
 # Competitive Analysis: Why TetherCraft Exists
 
+![TetherCraft 4-panel Kaffeehaus story](assets/tethercraft-story.jpg)
+
 Remote desktop software has two chronic, well-documented failures:
 
 1. **Consecutive money-grabs** by commercial apps that win trust as free or cheap personal tools and then lock users out behind hostile pricing and telemetry.
@@ -117,6 +119,7 @@ What RustDesk, AnyDesk, TeamViewer, LogMeIn, Splashtop, and Parsec have that Tet
 9. **Session tabs / multiple simultaneous sessions in one window:** Operate two machines side by side. *(AnyDesk, RustDesk)*
 10. **UDP hole punching (direct P2P NAT traversal) + WebSocket/proxy fallback:** Cuts latency and relay bandwidth when both sides are behind NAT. *(RustDesk, AnyDesk)*
 11. **LAN auto-discovery (mDNS / local broadcast):** Zero-config discovery of your own machines on the same Wi-Fi/LAN. *(RustDesk, AnyDesk)*
+12. **Low-latency game streaming (Under Development / TODO, Tier 4/5):** Zero-copy D3D11 -> NVENC/MFT hardware encode + QUIC/UDP datagrams + WASAPI->Opus audio + relative mouse + virtual gamepad passthrough. RustDesk cannot do this; adding it lets one tool replace both remote-desktop and Sunshine/Moonlight setups. See [GAME_STREAMING.md](GAME_STREAMING.md). *(Parsec, Sunshine/Moonlight)*
 
 ### Features we intentionally skip (anti-features / abuse vectors)
 
@@ -124,4 +127,3 @@ What RustDesk, AnyDesk, TeamViewer, LogMeIn, Splashtop, and Parsec have that Tet
 - Covert/stealth mode, hidden tray, silent consumer install (PRD sec 5).
 - Built-in RMM/MDM software inventory and policy push (PRD sec 5).
 - Mandatory vendor cloud account or SaaS licensing server.
-- 4K120 HDR competitive game streaming (well served by Moonlight/Sunshine and Parsec).
