@@ -1,5 +1,9 @@
 # CLI tools reference
 
+Running `tethercraft` with no subcommand opens the controller window
+(same as `tethercraft gui`): that is what double-click, `start.bat`, and
+shortcuts execute.
+
 Every verb supports `--json` and the global `--password-file` (plus `--via`
 for relay dialing on session verbs). Passwords never go on the command line.
 Session verbs dial through `live_session`: TOFU on first contact (loud

@@ -25,7 +25,7 @@ struct Cli {
     #[arg(long, global = true)]
     via: Option<String>,
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -692,7 +692,9 @@ fn print_out(as_json: bool, human: String, value: serde_json::Value) {
 
 fn run() -> Result<(), TetherError> {
     let cli = Cli::parse();
-    match cli.cmd {
+    // Bare run opens the controller window: that is what double-click,
+    // start.bat, and desktop shortcuts execute.
+    match cli.cmd.unwrap_or(Cmd::Gui) {
         Cmd::Status => {
             print_out(
                 cli.json,
@@ -1720,6 +1722,17 @@ mod tests {
         assert!(sync_preflight(false, false).is_ok());
         assert!(sync_preflight(true, true).is_ok());
         assert!(sync_preflight(true, false).is_err());
+    }
+
+    #[test]
+    fn bare_run_defaults_to_gui() {
+        let cli = Cli::try_parse_from(["tethercraft"]).unwrap_or_else(|_| std::process::exit(1));
+        assert!(cli.cmd.is_none());
+        // The default the launcher relies on: no subcommand opens the window.
+        assert!(matches!(cli.cmd.unwrap_or(Cmd::Gui), Cmd::Gui));
+        let status = Cli::try_parse_from(["tethercraft", "status"])
+            .unwrap_or_else(|_| std::process::exit(1));
+        assert!(matches!(status.cmd, Some(Cmd::Status)));
     }
 
     #[test]
