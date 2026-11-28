@@ -55,6 +55,10 @@ impl Store {
                     peer_id TEXT PRIMARY KEY,
                     reason TEXT NOT NULL,
                     at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS promotion_pending(
+                    peer_id TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL
                 );",
             )
             .map_err(|e| TetherError::Storage(format!("init: {e}")))?;
@@ -191,6 +195,64 @@ impl Store {
         Ok(())
     }
 
+    /// Start (or keep) the R3 cooling period for a stored peer. Returns the
+    /// original start time when a promotion is already pending, so repeating
+    /// the request can never restart or shorten the clock.
+    pub fn begin_promotion(
+        &self,
+        peer_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<DateTime<Utc>, TetherError> {
+        let known: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM peers WHERE peer_id=?1",
+                params![peer_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| TetherError::Storage(format!("promotion: {e}")))?;
+        if known == 0 {
+            return Err(TetherError::Invalid(format!("unknown peer {peer_id}")));
+        }
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO promotion_pending(peer_id, started_at) VALUES(?1, ?2)",
+                params![peer_id, now.to_rfc3339()],
+            )
+            .map_err(|e| TetherError::Storage(format!("promotion: {e}")))?;
+        self.promotion_started(peer_id)?
+            .ok_or_else(|| TetherError::Storage("promotion row missing".to_string()))
+    }
+
+    pub fn promotion_started(&self, peer_id: &str) -> Result<Option<DateTime<Utc>>, TetherError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT started_at FROM promotion_pending WHERE peer_id=?1")
+            .map_err(|e| TetherError::Storage(format!("promotion: {e}")))?;
+        let mut rows = stmt
+            .query_map(params![peer_id], |r| r.get::<_, String>(0))
+            .map_err(|e| TetherError::Storage(format!("promotion: {e}")))?;
+        match rows.next() {
+            None => Ok(None),
+            Some(row) => {
+                let text = row.map_err(|e| TetherError::Storage(format!("promotion: {e}")))?;
+                let at = text
+                    .parse::<DateTime<Utc>>()
+                    .map_err(|e| TetherError::Storage(format!("promotion time: {e}")))?;
+                Ok(Some(at))
+            }
+        }
+    }
+
+    pub fn clear_promotion(&self, peer_id: &str) -> Result<(), TetherError> {
+        self.conn
+            .execute(
+                "DELETE FROM promotion_pending WHERE peer_id=?1",
+                params![peer_id],
+            )
+            .map_err(|e| TetherError::Storage(format!("promotion: {e}")))?;
+        Ok(())
+    }
     pub fn log(&self, ev: &AuditEvent) -> Result<(), TetherError> {
         self.conn
             .execute(

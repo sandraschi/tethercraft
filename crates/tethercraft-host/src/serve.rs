@@ -31,6 +31,10 @@ pub struct ServeConfig {
     pub fps: u8,
     pub fake_frames: bool,
     pub outgoing_only: bool,
+    /// Live R1 check, evaluated for every incoming session at accept time (not
+    /// once at startup), so an onboarding answer given while the host is already
+    /// waiting takes effect on the next connection. None disables the check.
+    pub outgoing_gate: Option<fn() -> bool>,
     pub stop: Arc<AtomicBool>,
     pub codec: String,
     pub pin_key: Option<String>,
@@ -349,7 +353,7 @@ pub fn serve_stream(
     let mut sess = SessionStream::new(stream)?;
     let started = Instant::now();
 
-    if cfg.outgoing_only {
+    if cfg.outgoing_only || cfg.outgoing_gate.is_some_and(|gate| gate()) {
         audit(store, peer_label, "session", "refused-outgoing-only");
         return Ok(SessionReport {
             peer_id: peer_label.to_string(),
@@ -993,6 +997,7 @@ mod tests {
             fps: 10,
             fake_frames: true,
             outgoing_only: false,
+            outgoing_gate: None,
             stop: stop.clone(),
             codec: "h264".to_string(),
             pin_key: None,
@@ -1079,6 +1084,7 @@ mod tests {
             fps: 30,
             fake_frames: true,
             outgoing_only: false,
+            outgoing_gate: None,
             stop: stop.clone(),
             codec: "h264".to_string(),
             pin_key: None,
@@ -1143,6 +1149,45 @@ mod tests {
         );
     }
 
+    #[allow(clippy::panic)]
+    fn must<T, E: std::fmt::Debug>(r: Result<T, E>) -> T {
+        match r {
+            Ok(v) => v,
+            Err(e) => panic!("test setup failed: {e:?}"),
+        }
+    }
+
+    fn gate_always_on() -> bool {
+        true
+    }
+
+    /// R1: a gate that turns on after the host started must refuse the next
+    /// session at accept time, before any handshake byte is read.
+    #[test]
+    fn serve_stream_refuses_when_live_gate_is_on() {
+        let listener = must(TcpListener::bind("127.0.0.1:0"));
+        let port = must(listener.local_addr()).port();
+        let client = must(TcpStream::connect(format!("127.0.0.1:{port}")));
+        let (server_side, _) = must(listener.accept());
+        let cfg = ServeConfig {
+            port,
+            password: b"pw".to_vec(),
+            grants: vec![Permission::File],
+            fps: 10,
+            fake_frames: true,
+            outgoing_only: false,
+            outgoing_gate: Some(gate_always_on),
+            stop: Arc::new(AtomicBool::new(false)),
+            codec: "raw".to_string(),
+            pin_key: None,
+            share_root: None,
+        };
+        let signing = SigningKey::from_bytes(&[3u8; 32]);
+        let store = must(tethercraft_store::Store::open_in_memory());
+        let report = must(serve_stream(server_side, "t", &cfg, &signing, &store));
+        assert_eq!(report.ended, "outgoing-only");
+        drop(client);
+    }
     /// File verbs over a real session: list, download, hash. Proves the
     /// file path end to end, not just the rpc pieces.
     #[test]
@@ -1171,6 +1216,7 @@ mod tests {
             fps: 10,
             fake_frames: true,
             outgoing_only: false,
+            outgoing_gate: None,
             stop: stop.clone(),
             codec: "raw".to_string(),
             pin_key: None,

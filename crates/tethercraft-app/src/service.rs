@@ -220,6 +220,7 @@ pub fn run_host_service(
         fps: params.fps,
         fake_frames: params.fake_frames,
         outgoing_only: false,
+        outgoing_gate: Some(crate::current_outgoing_only),
         stop: stop.clone(),
         codec: params.codec.clone(),
         pin_key: params.pin_key.clone(),

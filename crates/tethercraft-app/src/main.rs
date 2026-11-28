@@ -925,16 +925,32 @@ fn run() -> Result<(), TetherError> {
             }
             BookOp::Promote { peer } => {
                 let s = open_store()?;
-                s.set_tier(&peer, "trusted_helper")?;
-                print_out(
-                    cli.json,
-                    format!("{peer} is now a trusted helper"),
-                    json!({"promoted": peer}),
-                );
+                match promote_step(&s, &peer, chrono::Utc::now())? {
+                    PromoteOutcome::Started(at) => print_out(
+                        cli.json,
+                        format!(
+                            "{peer}: promotion started (R3). Run this same command again after {} to confirm; nobody on a call can shorten that wait.",
+                            (at + chrono::Duration::seconds(tethercraft_core::PROMOTION_COOLDOWN_SECS))
+                                .format("%Y-%m-%d %H:%M UTC")
+                        ),
+                        json!({"promotion": "started", "peer": peer, "started_at": at.to_rfc3339()}),
+                    ),
+                    PromoteOutcome::Waiting { secs_left } => print_out(
+                        cli.json,
+                        format!("{peer}: cooling period not over, {secs_left} s left"),
+                        json!({"promotion": "waiting", "peer": peer, "secs_left": secs_left}),
+                    ),
+                    PromoteOutcome::Promoted => print_out(
+                        cli.json,
+                        format!("{peer} is now a trusted helper"),
+                        json!({"promoted": peer}),
+                    ),
+                }
                 Ok(())
             }
             BookOp::Demote { peer } => {
                 let s = open_store()?;
+                s.clear_promotion(&peer)?;
                 s.set_tier(&peer, "stranger")?;
                 print_out(
                     cli.json,
@@ -1587,6 +1603,7 @@ fn run() -> Result<(), TetherError> {
                 fps,
                 fake_frames,
                 outgoing_only: false,
+                outgoing_gate: Some(current_outgoing_only),
                 stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 codec: codec.clone(),
                 pin_key: pin_key.clone(),
@@ -1779,6 +1796,63 @@ fn read_onboarding() -> (bool, bool, Option<std::path::PathBuf>) {
     }
 }
 
+/// Result of one `book promote` call (R3: promotion is a two-step, 24 h flow).
+#[derive(Debug, PartialEq, Eq)]
+enum PromoteOutcome {
+    Started(chrono::DateTime<chrono::Utc>),
+    Waiting { secs_left: i64 },
+    Promoted,
+}
+
+/// R3 promotion through `core::trust`: the first call starts the cooling
+/// period and persists its start; only a later call after the cooldown can
+/// promote. A repeated request never restarts the clock. There is deliberately
+/// no in-person shortcut on the CLI: a scammer can talk a victim into typing a
+/// flag, so that path waits for the QR pairing flow.
+fn promote_step(
+    store: &tethercraft_store::Store,
+    peer: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<PromoteOutcome, TetherError> {
+    let row = store
+        .list_peers()?
+        .into_iter()
+        .find(|p| p.peer_id == peer)
+        .ok_or_else(|| TetherError::Invalid(format!("unknown peer {peer}")))?;
+    if row.tier != "stranger" {
+        return Err(TetherError::Invalid(format!(
+            "{peer} is already {}; only strangers are promoted",
+            row.tier
+        )));
+    }
+    // Local operator on the CLI, no session is driven from here.
+    let req = tethercraft_core::PeerPolicy::stranger(peer).request_promotion(false)?;
+    match store.promotion_started(peer)? {
+        None => Ok(PromoteOutcome::Started(store.begin_promotion(peer, now)?)),
+        Some(started) => match req.confirm_cooling(started, now, true, false) {
+            Ok(_) => {
+                store.set_tier(peer, "trusted_helper")?;
+                store.clear_promotion(peer)?;
+                Ok(PromoteOutcome::Promoted)
+            }
+            Err(TetherError::Denied(msg)) if msg.starts_with("cooling period not over") => {
+                let left = tethercraft_core::PROMOTION_COOLDOWN_SECS
+                    - now.signed_duration_since(started).num_seconds();
+                Ok(PromoteOutcome::Waiting {
+                    secs_left: left.max(0),
+                })
+            }
+            Err(e) => Err(e),
+        },
+    }
+}
+/// Live R1 state for the host accept path: true while the persisted onboarding
+/// answer says someone is pressuring the user (24 h outgoing-only window).
+/// Re-read on every incoming session so a new answer applies immediately.
+fn current_outgoing_only() -> bool {
+    read_onboarding().0
+}
+
 fn open_store() -> Result<tethercraft_store::Store, TetherError> {
     let path = store_path();
     if let Some(parent) = std::path::Path::new(&path).parent() {
@@ -1860,5 +1934,64 @@ mod tests {
         assert!(Cli::try_parse_from(["tethercraft", "gui"]).is_ok());
         assert!(Cli::try_parse_from(["tethercraft", "server"]).is_ok());
         assert!(Cli::try_parse_from(["tethercraft", "server", "--port", "21116"]).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod promote_tests {
+    use super::*;
+    use chrono::{Duration, TimeZone, Utc};
+
+    #[allow(clippy::panic)]
+    fn must<T, E: std::fmt::Debug>(r: Result<T, E>) -> T {
+        match r {
+            Ok(v) => v,
+            Err(e) => panic!("test step failed: {e:?}"),
+        }
+    }
+
+    fn store_with(peer: &str) -> tethercraft_store::Store {
+        let s = must(tethercraft_store::Store::open_in_memory());
+        must(s.add_peer(peer, None, "ab", None));
+        s
+    }
+
+    fn start_time() -> chrono::DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 11, 28, 12, 0, 0)
+            .single()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn promote_needs_the_24h_cooling_period() {
+        let s = store_with("p");
+        let t0 = start_time();
+        assert!(matches!(
+            promote_step(&s, "p", t0),
+            Ok(PromoteOutcome::Started(_))
+        ));
+        // Asking again an hour later neither promotes nor restarts the clock.
+        let t1 = t0 + Duration::hours(1);
+        assert_eq!(
+            must(promote_step(&s, "p", t1)),
+            PromoteOutcome::Waiting {
+                secs_left: 23 * 3600
+            }
+        );
+        assert_eq!(must(s.list_peers())[0].tier, "stranger");
+        let t2 = t0 + Duration::hours(24);
+        assert_eq!(must(promote_step(&s, "p", t2)), PromoteOutcome::Promoted);
+        assert_eq!(must(s.list_peers())[0].tier, "trusted_helper");
+        assert!(must(s.promotion_started("p")).is_none());
+    }
+
+    #[test]
+    fn promote_refuses_unknown_and_already_trusted_peers() {
+        let s = store_with("p");
+        let t0 = start_time();
+        assert!(promote_step(&s, "ghost", t0).is_err());
+        must(promote_step(&s, "p", t0));
+        must(promote_step(&s, "p", t0 + Duration::hours(25)));
+        assert!(promote_step(&s, "p", t0 + Duration::hours(26)).is_err());
     }
 }
