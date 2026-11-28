@@ -24,14 +24,19 @@ tools. Not yet done: the two-machine LAN/Tailscale run, codecs, OS sensors. See
 
 ## Controller UI
 
-`tethercraft gui` opens the L3 egui window: a RustDesk-style peer board
-(cards with alias, id, address, and a green key-pinned / amber
-first-contact dot), a search box filtering by name, id, or address, click to
-select, double-click (or the Connect button) to start, session view,
-always-visible End session button while connected, Ctrl + wheel zoom, audit
-tail, and the R1 install gate (20-second wait, answer stored in
-`onboarding.txt` next to the store; yes/not-sure enables 24 h
-outgoing-only with a banner).
+`tethercraft gui` opens the L3 egui window, structured in Board, Session,
+and Help sections (tabs in the top bar). The Board is a RustDesk-style peer
+kanban: Ready to connect, First contact (verify words), and Needs an
+address columns; cards carry alias, id, address, trust tier, and a green
+key-pinned / amber first-contact dot. Click selects, double-click (or the
+Connect button) starts, Copy ID puts the id on the clipboard, and the search
+box filters by name, id, tier, or address. The Session section shows the
+live stream (or the headless hint when idle); Help renders the operator
+guide in-app. Always-visible End session button while connected, Ctrl +
+wheel zoom, audit tail, and the R1 install gate (20-second wait, answer
+stored in `onboarding.txt` next to the store; yes/not-sure enables 24 h
+outgoing-only with a banner). Double-click `start.bat` (or `.\start.ps1`)
+builds and launches the window so it always runs current code.
 
 `tethercraft connect <peer>` dials the host, runs the handshake, and opens the
 same window on the live stream: pointer and keyboard input are forwarded to the
@@ -56,7 +61,7 @@ comparison, not a certificate authority.
 
 ## Layout
 
-> **Operator Guide & Crate Docs:** See [`HELP.md`](HELP.md) for the quickstart tour, scam-resistance summary (R1–R7), and links to all 12 crate sub-READMEs (`crates/tethercraft-*/README.md`).
+> **Operator Guide & Crate Docs:** See [`HELP.md`](HELP.md) for the quickstart tour, scam-resistance summary (R1–R7), and links to all 12 crate sub-READMEs (`crates/tethercraft-*/README.md`). The [`docs/`](docs/README.md) stack has the CLI reference ([TOOLS](docs/TOOLS.md)), [configuration](docs/CONFIGURATION.md), [development](docs/DEVELOPMENT.md), and [troubleshooting](docs/TROUBLESHOOTING.md) guides.
 
 | Crate | Role |
 |---|---|

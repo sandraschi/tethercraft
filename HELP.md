@@ -14,8 +14,8 @@ Pure-Rust remote desktop with native wire protocol, SPAKE2 authentication, WGC c
    tethercraft book add goliath <host-id-hex> --addr 127.0.0.1:21120 --alias Goliath
    tethercraft serve goliath --password-file pw.txt --frames 10 --out frame.ppm
    ```
-   Compare the fingerprint words printed by the host with the words reported by the controller — first-use trust is that comparison, not a certificate authority.
-3. **Launch the Controller GUI**: Run `tethercraft gui` (or `tethercraft connect <peer>`) to open the native egui controller with peer sidebar, live session stream, always-visible **End session** button, `Ctrl+Wheel` zoom, and audit tail.
+   Compare the fingerprint words printed by the host with the words reported by the controller - first-use trust is that comparison, not a certificate authority.
+3. **Launch the Controller GUI**: Run `tethercraft gui` (or `tethercraft connect <peer>`) to open the native egui controller with Board, Session, and Help tabs: a RustDesk-style peer kanban (Ready, First contact, Needs an address), live session stream, always-visible **End session** button, `Ctrl+Wheel` zoom, audit tail, and the in-app operator guide. Double-click `start.bat` (or `.\start.ps1`) to build and launch it. Full verb list in `docs/TOOLS.md`.
 4. **Headless Scripted Check**: Run `tethercraft connect <peer> --headless out.ppm` to run a session without a window and save a captured frame.
 
 ## 2. Functions & Crate Layout
@@ -24,7 +24,7 @@ Pure-Rust remote desktop with native wire protocol, SPAKE2 authentication, WGC c
 - **Wire & Crypto (`tethercraft-proto`, `tethercraft-net`)**: Native `serde` + `postcard` versioned wire schema, Ed25519 device keys, fingerprint words, SPAKE2 PAKE handshake, and QUIC pinned-key transport configuration.
 - **Capture, Codec & Input (`tethercraft-capture`, `tethercraft-codec`, `tethercraft-input`)**: Windows WGC with DXGI fallback, hardware/VP9 codec interface, and host-permission-gated input injection.
 - **Storage, Server & Cross-OS Probe (`tethercraft-store`, `tethercraft-server`, `tethercraft-probe`)**: SQLite address book & audit store, self-hosted rendezvous/relay server (Tier 3), and headless Linux-musl cross-compilable controller probe.
-- **CLI, GUI & MCP (`tethercraft-app`, `tethercraft-mcp`)**: Unified CLI with `--json`, egui controller window, and read-only stdio MCP server.
+- **CLI, GUI & MCP (`tethercraft-app`, `tethercraft-mcp`)**: Unified CLI with `--json`, egui controller window with Board/Session/Help sections, and stateful stdio MCP server (read tools open, mutating tools need `confirm=true`).
 
 ## 3. Scam Resistance & Safety Invariants (R1–R7)
 
