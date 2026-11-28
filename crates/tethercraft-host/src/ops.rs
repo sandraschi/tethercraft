@@ -5,6 +5,7 @@
 //! in depth, and the validation is unit-tested without a network.
 
 use std::collections::HashMap;
+#[cfg(windows)]
 use std::time::{Duration, Instant};
 use tethercraft_core::TetherError;
 use tethercraft_proto as proto;
@@ -343,9 +344,9 @@ pub fn run_exec(command: &str) -> Result<(i32, String), TetherError> {
     #[cfg(not(windows))]
     {
         let _ = command;
-        return Err(TetherError::NotImplemented(
+        Err(TetherError::NotImplemented(
             "remote exec is Windows-only in this tier".to_string(),
-        ));
+        ))
     }
     #[cfg(windows)]
     {
@@ -428,9 +429,9 @@ pub fn power(action: PowerAction, delay_secs: u64) -> Result<(), TetherError> {
     #[cfg(not(windows))]
     {
         let _ = (&action, delay_secs);
-        return Err(TetherError::NotImplemented(
+        Err(TetherError::NotImplemented(
             "remote power actions are Windows-only in this tier".to_string(),
-        ));
+        ))
     }
     #[cfg(windows)]
     {

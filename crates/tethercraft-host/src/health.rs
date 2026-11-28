@@ -269,6 +269,7 @@ fn list_process_names() -> Vec<String> {
     }
 }
 
+#[cfg(any(windows, test))]
 fn parse_tasklist_csv(csv: &str) -> Vec<String> {
     csv.lines()
         .filter_map(|line| {

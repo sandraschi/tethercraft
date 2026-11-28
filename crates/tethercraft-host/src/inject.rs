@@ -4,6 +4,7 @@
 //! Real on Windows, `NotImplemented` elsewhere. Key codes are Windows
 //! virtual-key codes (u16); the controller maps its keys to them.
 
+#[cfg(windows)]
 use enigo::{Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
 use tethercraft_core::TetherError;
 use tethercraft_input::InputEvent;
@@ -18,15 +19,18 @@ pub fn map_vk(code: u32) -> Result<u16, TetherError> {
     Ok(code as u16)
 }
 
+#[cfg(windows)]
 fn backend() -> Result<Enigo, TetherError> {
     Enigo::new(&Settings::default())
         .map_err(|e| TetherError::Invalid(format!("input backend: {e:?}")))
 }
 
+#[cfg(windows)]
 fn fail(e: enigo::InputError) -> TetherError {
     TetherError::Invalid(format!("inject: {e:?}"))
 }
 
+#[cfg(windows)]
 fn click(e: &mut Enigo, button: u8) -> Result<(), TetherError> {
     let b = match button {
         0 => Button::Left,

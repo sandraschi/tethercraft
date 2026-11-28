@@ -14,7 +14,9 @@ use std::sync::{
 };
 use tethercraft_core::{Permission, TetherError};
 
+#[cfg(windows)]
 pub const SERVICE_NAME: &str = "TetherCraftHost";
+#[cfg(windows)]
 pub const SERVICE_DISPLAY: &str = "TetherCraft Host";
 
 /// On-disk config. Only `password_file` is required; everything else falls
@@ -277,6 +279,7 @@ pub fn run_host_service(
     Ok(())
 }
 
+#[cfg(windows)]
 fn template_config() -> String {
     let example = FileConfig {
         port: Some(21120),
@@ -538,12 +541,8 @@ mod imp {
             "windows service stop needs Windows".to_string(),
         ))
     }
-
-    pub fn run_dispatcher() -> Result<(), TetherError> {
-        Err(TetherError::NotImplemented(
-            "windows service dispatch needs Windows".to_string(),
-        ))
-    }
 }
 
-pub use imp::{install, run_dispatcher, start_svc, stop_svc, uninstall};
+#[cfg(windows)]
+pub use imp::run_dispatcher;
+pub use imp::{install, start_svc, stop_svc, uninstall};
