@@ -140,6 +140,9 @@ fn close_tunnel(tunnels: &mut HashMap<u32, mpsc::Sender<Vec<u8>>>, channel: u32)
     tunnels.remove(&channel);
 }
 
+/// Cap on frame packets sent per main-loop turn so input and commands stay responsive.
+const MAX_PACKETS_PER_TURN: usize = 2;
+
 /// Read envelopes on a dedicated thread. A blocking read is the only safe way
 /// to consume a length-prefixed stream: timing out mid-message loses bytes.
 fn spawn_reader(mut sess: SessionStream) -> mpsc::Receiver<Envelope> {
@@ -489,11 +492,14 @@ pub fn serve_stream(
             report.ended = "session-cap".to_string();
             break;
         }
-        // Send every ready packet in order (bounded by sync_channel(2)).
+        // Send ready packets in order (bounded by sync_channel(2)).
         // Never drop post-encode H.264 NALs: dropping an IDR or P-frame
-        // breaks the decoder reference chain.
+        // breaks the decoder reference chain. At most MAX_PACKETS_PER_TURN go out
+        // per turn: when sending is slower than the pump (big frames, slow link,
+        // software crypto) an unbounded drain never returned to the input and
+        // command poll below, starving every request behind the frame stream.
         let mut send_failed = false;
-        for packet in frames.try_iter() {
+        for packet in frames.try_iter().take(MAX_PACKETS_PER_TURN) {
             match packet {
                 PumpPacket::Packet {
                     kind,
