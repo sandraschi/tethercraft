@@ -1,80 +1,59 @@
 ---
-updated: 2026-11-28T03:10:00+01:00
-agent: opencode-musespark
-status: in-progress (handed to agy - problem report below)
-tags: [tethercraft, rust, remote-desktop, tier2, handover, problem-report]
+updated: 2026-11-28T04:04:00+01:00
+agent: antigravity
+status: in-progress (framerate pipeline fixed, 32.5 fps real 1080p measured)
+tags: [tethercraft, rust, remote-desktop, tier2, handover]
 ---
 
-## PROBLEM REPORT FOR AGY (read this first)
+## Current state (2026-11-28 04:04)
 
-User goal: copy RustDesk functionality and framerate. The codec question is
-answered, the framerate blockers are ranked, and one self-inflicted incident
-needs your review. Tree is green and pushed; nothing is left half-edited.
+The deadline-pacing incident is diagnosed and fixed, persistent WGC capture is
+implemented, and OpenH264 is tuned for real-time screen content. Tree is green
+and committed (126 workspace tests passed, clippy `-D warnings` clean, `cargo
+fmt --all --check` clean).
 
-### 1. The codec crate is fine - no shopping needed
+### What changed this session
 
-`openh264` 0.9 with default `source` feature statically compiles vendored
-OpenH264 C++ into the binary at build time. No network download happens
-(the old `h264.rs` comment claiming a build-time download was wrong and is
-now fixed). Offline-safe, reproducible, BSD-2-Clause bindings. Alternatives
-checked and rejected: `h264-reader` parses but does not decode pixels,
-`ffmpeg-next` needs system ffmpeg, `x264` bindings are GPL (license poison
-for MIT/Apache). RustDesk-class software H.264 is exactly this crate.
+1. **Root cause and fix for `serve_one_h264_fake_session` incident** (`crates/tethercraft-host/src/serve.rs`):
+   - Cause: the serve loop drained `frames.try_iter()` keeping only `latest`,
+     which dropped already-encoded H.264 packets (including Frame 0 SPS/PPS/IDR)
+     whenever deadline pacing aligned the pump's `per_frame` timer with the
+     serve loop's `incoming.recv_timeout(tick)` timer.
+   - Fix: switched pump channel to bounded `mpsc::sync_channel(2)` so
+     backpressure stalls pre-encode instead of dropping encoded H.264 NALs;
+     serve loop sends every ready packet in order and polls `incoming` with a
+     5 ms slice so frames flush promptly without dual-timer beat. Restored
+     deadline pacing (`next_tick` grid) and added a 30 fps 10-frame H.264
+     regression test (`serve_one_h264_high_fps_deadline_pacing`).
+2. **Persistent WGC capture stream** (`crates/tethercraft-capture/src/wgc.rs`, `lib.rs`):
+   - Added `WgcStream` / `CaptureStream`: keeps one WGC session alive per host
+     session, coalesces intermediate raw frames in a single latest-BGRA slot
+     pre-encode, and delivers BGRA8 directly without an extra 8.3 MB BGRA->RGBA
+     copy+swap when encoding H.264. `live_frame` / `grab_primary` kept intact.
+3. **OpenH264 screen-content tuning and buffer reuse** (`crates/tethercraft-codec/src/h264.rs`):
+   - Added `H264Encoder::with_config(w, h, fps, bitrate_bps)` using
+     `UsageType::ScreenContentRealTime`, `Complexity::Low`, 4 Mbps target,
+     `skip_frames(false)`, and `adaptive_quantization(false)` /
+     `background_detection(false)`.
+   - Reused `YUVBuffer` across frames and added `encode_bgra(&mut self, bgra)`
+     using `BgraSliceU8` + `YUVBuffer::read_bgra8` (with unit test).
+4. **Live 1080p loopback benchmark on Goliath** (`docs/BENCH.md`):
+   - 30 fps target, 30 frames: 1708 ms (17.6 fps end-to-end incl. handshake),
+     25,600 bytes total (853 B/frame), 0 fallbacks.
+   - 60 fps target, 60 frames: 1846 ms (32.5 fps end-to-end incl. handshake),
+     29,104 bytes total (485 B/frame), 0 fallbacks.
+   - Up from ~1.6 fps (one-shot WGC) -> ~20x real 1080p speedup.
 
-Wiring status: host pump already encodes (`H264Encoder`, reused across
-frames, recreated on resolution change) and sends `FrameH264`; controller
-`StreamDecoder` already decodes to RGBA; 570x over raw measured
-(`docs/BENCH.md`, 14.5 KB vs 8.3 MB). Nothing to "wire" at the codec layer.
+### Remaining open threads
 
-### 2. What actually caps framerate, ranked
-
-1. Real capture is one-shot: `live_frame(2s)` grabs a fresh WGC session per
-   frame (~400 ms each). Persistent capture session is the real fix and is
-   not started. This alone caps real 1080p at ~1-2 fps regardless of codec.
-2. No adaptive bitrate/resolution: `H264Encoder::new(w, h)` uses OpenH264
-   defaults; `EncoderConfig` (bitrate, usage type ScreenContentRealTime) is
-   not exposed. Second after persistent capture.
-3. No hardware encoder: `hardware_available()` returns false on all
-   platforms (Media Foundation / NVENC not started).
-4. The musl probe builds with the `h264` feature off by design (lean,
-   dependency-free binary), so cross-OS runs need `--codec raw`. If the
-   probe ever needs H.264, that is a deliberate product decision, not a bug.
-5. Measured today: loopback synthetic 21.1 fps, NAT raw 7-9 fps
-   (bandwidth-bound, 921 KB/frame), real 1080p ~1-2 fps. Full table in
-   `docs/BENCH.md`.
-
-### 3. Incident: deadline pacing broke `serve_one_h264_fake_session`
-
-While answering "wire the codec", the previous agent changed the pump from
-trailing `sleep(per_frame)` to deadline pacing (`next_tick` grid) in
-`spawn_pump` (`crates/tethercraft-host/src/serve.rs`). Result:
-`serve_one_h264_fake_session` failed twice in a row, alone, in ~1.04 s,
-on `assert!(r.frames_sent >= 3)`. Reverting the hunk (restoring trailing
-sleep) makes it pass; the revert is committed and pushed. Cause NOT
-established. Do not re-land deadline pacing without answering this.
-
-Facts for the investigation:
-- The client side got far enough that the report assert (line ~951) fired
-  before the client asserts, so the host loop exited early with <3 sends.
-- Prime suspect area: serve-loop `recv_timeout(tick)` + latest-wins
-  interaction with the new first-frame timing, or a `frame-send-failed`
-  exit. The test never prints `report.ended` or the audit tail - adding
-  that output is step one and will likely name the cause in one run.
-- Bisect is clean: only that hunk changed behavior; the `h264.rs` comment
-  fix in the same commit is unrelated.
-
-### 4. Open threads (yours now)
-
-- Bare `tethercraft` opens the GUI (`unwrap_or(Cmd::Gui)`, tested,
-  verified live 8 s on Goliath). `start.ps1`/`start.bat` work.
-- GUI in-window dial is not wired (Connect starts the local session;
-  password prompt + background handshake missing), same for the TOFU-notice
-  surface in the window flow.
-- `start.ps1` Floor check is off (Tier 3 workstation chrome not built).
-  Honest, documented in `scripts/craft.config.psd1`.
-- Relay operator can read sessions until E2E lands: self-host only.
-- Windows guest VM still needs one interactive login before guest control
-  works; Ubuntu e2e recipe in `docs/VMTEST.md` works as of 2026-11-28.
+- **Hardware H.264 encoder** (Media Foundation / NVENC) in `tethercraft-codec`
+  for 1080p60+ high-motion and 4K.
+- **GUI in-window dial + TOFU notice**: bare `tethercraft` opens the GUI, but
+  Connect still needs password prompt, background handshake, and TOFU-notice UI.
+- **Relay E2E encryption**: relay still pipes raw bytes (self-host lab only).
+- **Two-machine LAN/Tailscale bench**: blocked on second physical PC (or one
+  interactive login on `win11-automated`).
+- **`start.ps1` Floor check**: honestly off (Tier 3 workstation chrome not built).
 
 // earlier log below - still current unless noted above
 

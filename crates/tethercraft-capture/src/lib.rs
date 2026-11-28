@@ -55,6 +55,94 @@ pub fn fake_frame(width: u32, height: u32, frame_no: u64) -> (FrameMeta, Vec<u8>
     (meta, px)
 }
 
+/// Pixel layout of a captured frame buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelFormat {
+    Rgba,
+    Bgra,
+}
+
+/// One captured frame with its native pixel layout.
+#[derive(Debug, Clone)]
+pub struct CapturedFrame {
+    pub meta: FrameMeta,
+    pub format: PixelFormat,
+    pub pixels: Vec<u8>,
+}
+
+impl CapturedFrame {
+    /// Convert the pixel buffer to RGBA8 in place if needed.
+    pub fn into_rgba(mut self) -> Vec<u8> {
+        if self.format == PixelFormat::Bgra {
+            let mut i = 0;
+            while i + 4 <= self.pixels.len() {
+                self.pixels.swap(i, i + 2);
+                i += 4;
+            }
+        }
+        self.pixels
+    }
+}
+
+/// Persistent live capture session (WGC on Windows).
+/// Keeps one OS capture session open instead of restarting per frame.
+pub struct CaptureStream {
+    #[cfg(windows)]
+    inner: wgc::WgcStream,
+    frame_no: u64,
+}
+
+impl CaptureStream {
+    pub fn start() -> Result<Self, TetherError> {
+        #[cfg(windows)]
+        {
+            let inner = wgc::WgcStream::start()?;
+            Ok(Self { inner, frame_no: 0 })
+        }
+        #[cfg(not(windows))]
+        {
+            Err(TetherError::NotImplemented(
+                "live capture is Windows-only in Tier 1".to_string(),
+            ))
+        }
+    }
+
+    /// Wait up to `timeout` for the next unseen frame.
+    /// Returns `Ok(None)` when the desktop did not repaint before `timeout`.
+    pub fn next_frame(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Result<Option<CapturedFrame>, TetherError> {
+        #[cfg(windows)]
+        {
+            match self.inner.next_frame(timeout)? {
+                Some((width, height, bgra)) => {
+                    let frame_no = self.frame_no;
+                    self.frame_no = self.frame_no.wrapping_add(1);
+                    Ok(Some(CapturedFrame {
+                        meta: FrameMeta {
+                            width,
+                            height,
+                            backend: Backend::Wgc,
+                            frame_no,
+                        },
+                        format: PixelFormat::Bgra,
+                        pixels: bgra,
+                    }))
+                }
+                None => Ok(None),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = timeout;
+            Err(TetherError::NotImplemented(
+                "live capture is Windows-only in Tier 1".to_string(),
+            ))
+        }
+    }
+}
+
 /// Grab one live frame from the primary monitor (WGC on Windows).
 /// Fails honestly where there is no display to capture.
 pub fn live_frame(timeout: std::time::Duration) -> Result<(FrameMeta, Vec<u8>), TetherError> {
@@ -185,6 +273,39 @@ mod tests {
         #[cfg(not(windows))]
         {
             assert!(r.is_err());
+        }
+    }
+
+    #[test]
+    fn capture_stream_and_bgra_conversion() {
+        let f = CapturedFrame {
+            meta: FrameMeta {
+                width: 2,
+                height: 1,
+                backend: Backend::Fake,
+                frame_no: 0,
+            },
+            format: PixelFormat::Bgra,
+            pixels: vec![10, 20, 30, 255, 40, 50, 60, 255],
+        };
+        let rgba = f.into_rgba();
+        assert!(rgba == vec![30, 20, 10, 255, 60, 50, 40, 255]);
+
+        #[cfg(windows)]
+        {
+            if let Ok(mut stream) = CaptureStream::start() {
+                if let Ok(Some(frame)) = stream.next_frame(std::time::Duration::from_secs(3)) {
+                    assert!(
+                        frame.pixels.len()
+                            == frame.meta.width as usize * frame.meta.height as usize * 4
+                    );
+                    assert!(frame.format == PixelFormat::Bgra);
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(CaptureStream::start().is_err());
         }
     }
 

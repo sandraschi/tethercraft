@@ -159,49 +159,132 @@ fn spawn_reader(stream: std::net::TcpStream) -> mpsc::Receiver<Envelope> {
 }
 
 /// Pump frames in the background: capture, optionally H.264-encode, and hand
-/// the ready-to-send packet to the serve loop. A slow capture or encode never
-/// blocks input handling; only the latest packet is kept.
+/// the ready-to-send packet to the serve loop.
+///
+/// Uses a bounded `sync_channel(2)` so backpressure stalls capture/encode rather
+/// than dropping already-encoded H.264 NALs (which would break SPS/PPS/IDR or
+/// P-frame references). On live Windows capture, a persistent `CaptureStream`
+/// coalesces intermediate raw frames pre-encode.
 fn spawn_pump(
     fake: bool,
     fps: u8,
     stop: Arc<AtomicBool>,
     codec: String,
 ) -> mpsc::Receiver<PumpPacket> {
-    let (tx, rx) = mpsc::channel();
-    let per_frame = Duration::from_millis((1000 / u64::from(fps.max(1))).max(16));
+    let (tx, rx) = mpsc::sync_channel(2);
+    let per_frame =
+        Duration::from_micros(1_000_000 / u64::from(fps.max(1))).max(Duration::from_millis(8));
     std::thread::spawn(move || {
         let mut n = 0u64;
         let mut enc: Option<tethercraft_codec::h264::H264Encoder> = None;
         let mut enc_dims = (0u32, 0u32);
+        let mut live_stream: Option<tethercraft_capture::CaptureStream> = if fake {
+            None
+        } else {
+            tethercraft_capture::CaptureStream::start().ok()
+        };
+        let mut last_live: Option<tethercraft_capture::CapturedFrame> = None;
+        let mut next_tick = Instant::now();
         while !stop.load(Ordering::Relaxed) {
-            let frame = if fake {
+            let wait_for = next_tick.saturating_duration_since(Instant::now());
+            let frame: Option<&tethercraft_capture::CapturedFrame> = if fake {
+                if !wait_for.is_zero() {
+                    std::thread::sleep(wait_for);
+                }
+                next_tick = Instant::now() + per_frame;
                 let (meta, px) = tethercraft_capture::fake_frame(640, 360, n);
-                Some((meta.width, meta.height, px))
+                last_live = Some(tethercraft_capture::CapturedFrame {
+                    meta,
+                    format: tethercraft_capture::PixelFormat::Rgba,
+                    pixels: px,
+                });
+                last_live.as_ref()
             } else {
-                tethercraft_capture::live_frame(Duration::from_secs(2))
-                    .ok()
-                    .map(|(meta, px)| (meta.width, meta.height, px))
+                if live_stream.is_none() {
+                    live_stream = tethercraft_capture::CaptureStream::start().ok();
+                }
+                let got = match live_stream.as_mut() {
+                    Some(stream) => {
+                        let poll = if last_live.is_none() {
+                            Duration::from_secs(2)
+                        } else {
+                            wait_for
+                        };
+                        match stream.next_frame(poll) {
+                            Ok(Some(f)) => {
+                                last_live = Some(f);
+                                last_live.as_ref()
+                            }
+                            Ok(None) => last_live.as_ref(),
+                            Err(_) => {
+                                live_stream = None;
+                                last_live.as_ref()
+                            }
+                        }
+                    }
+                    None => {
+                        if !wait_for.is_zero() {
+                            std::thread::sleep(wait_for);
+                        }
+                        if let Ok((meta, px)) =
+                            tethercraft_capture::live_frame(Duration::from_secs(2))
+                        {
+                            last_live = Some(tethercraft_capture::CapturedFrame {
+                                meta,
+                                format: tethercraft_capture::PixelFormat::Rgba,
+                                pixels: px,
+                            });
+                        }
+                        last_live.as_ref()
+                    }
+                };
+                // Enforce the fps floor when a WGC frame arrived earlier than next_tick.
+                let rem = next_tick.saturating_duration_since(Instant::now());
+                if !rem.is_zero() {
+                    std::thread::sleep(rem);
+                }
+                next_tick = Instant::now() + per_frame;
+                got
             };
-            if let Some((w, h, rgba)) = frame {
+
+            if let Some(captured) = frame {
+                let w = captured.meta.width;
+                let h = captured.meta.height;
                 let packet = if codec == "h264" {
                     if enc_dims != (w, h) {
-                        enc = tethercraft_codec::h264::H264Encoder::new(w, h).ok();
+                        enc =
+                            tethercraft_codec::h264::H264Encoder::with_config(w, h, fps, 4_000_000)
+                                .ok();
                         enc_dims = (w, h);
                     }
                     match enc.as_mut() {
-                        Some(e) => match e.encode_rgba(&rgba) {
-                            Ok(nal) => match session::encode_frame_h264(w, h, &nal) {
-                                Ok(p) => PumpPacket::packet(MessageKind::FrameH264, p, false),
-                                Err(_) => PumpPacket::dropped("h264 packet too large"),
-                            },
-                            Err(e) => PumpPacket::dropped(&format!("h264 encode: {e}")),
-                        },
-                        None => match session::encode_frame(w, h, &rgba) {
-                            Ok(p) => PumpPacket::packet(MessageKind::Frame, p, true),
-                            Err(_) => PumpPacket::dropped("raw encode failed"),
-                        },
+                        Some(e) => {
+                            let encoded = match captured.format {
+                                tethercraft_capture::PixelFormat::Bgra => {
+                                    e.encode_bgra(&captured.pixels)
+                                }
+                                tethercraft_capture::PixelFormat::Rgba => {
+                                    e.encode_rgba(&captured.pixels)
+                                }
+                            };
+                            match encoded {
+                                Ok(nal) => match session::encode_frame_h264(w, h, &nal) {
+                                    Ok(p) => PumpPacket::packet(MessageKind::FrameH264, p, false),
+                                    Err(_) => PumpPacket::dropped("h264 packet too large"),
+                                },
+                                Err(e) => PumpPacket::dropped(&format!("h264 encode: {e}")),
+                            }
+                        }
+                        None => {
+                            let rgba = captured.clone().into_rgba();
+                            match session::encode_frame(w, h, &rgba) {
+                                Ok(p) => PumpPacket::packet(MessageKind::Frame, p, true),
+                                Err(_) => PumpPacket::dropped("raw encode failed"),
+                            }
+                        }
                     }
                 } else {
+                    let rgba = captured.clone().into_rgba();
                     match session::encode_frame(w, h, &rgba) {
                         Ok(p) => PumpPacket::packet(MessageKind::Frame, p, false),
                         Err(_) => PumpPacket::dropped("raw encode failed"),
@@ -212,7 +295,6 @@ fn spawn_pump(
                 }
             }
             n = n.wrapping_add(1);
-            std::thread::sleep(per_frame);
         }
     });
     rx
@@ -388,7 +470,9 @@ pub fn serve_stream(
     // Input arrives on its own thread; the main loop only writes frames.
     let input_stream = sess.clone_stream()?;
     let incoming = spawn_reader(input_stream);
-    let tick = Duration::from_millis((1000 / u64::from(cfg.fps.max(1))).max(16));
+    // Short poll slice so input wakes immediately and newly encoded frames
+    // flush promptly without beating against the pump's own fps grid.
+    let poll_slice = Duration::from_millis(5);
     let mut report = SessionReport {
         peer_id: auth.peer_id.clone(),
         frames_sent: 0,
@@ -409,34 +493,38 @@ pub fn serve_stream(
             report.ended = "session-cap".to_string();
             break;
         }
-        // Latest packet wins; backlog is dropped.
-        let mut latest: Option<PumpPacket> = None;
-        for p in frames.try_iter() {
-            latest = Some(p);
-        }
-        match latest {
-            Some(PumpPacket::Packet {
-                kind,
-                payload,
-                fallback,
-            }) => {
-                report.bytes_sent = report.bytes_sent.saturating_add(payload.len() as u64);
-                let env = Envelope::new(kind, my_pub, payload);
-                if sess.send_envelope(&env).is_err() {
-                    report.ended = "frame-send-failed".to_string();
-                    break;
+        // Send every ready packet in order (bounded by sync_channel(2)).
+        // Never drop post-encode H.264 NALs: dropping an IDR or P-frame
+        // breaks the decoder reference chain.
+        let mut send_failed = false;
+        for packet in frames.try_iter() {
+            match packet {
+                PumpPacket::Packet {
+                    kind,
+                    payload,
+                    fallback,
+                } => {
+                    report.bytes_sent = report.bytes_sent.saturating_add(payload.len() as u64);
+                    let env = Envelope::new(kind, my_pub, payload);
+                    if sess.send_envelope(&env).is_err() {
+                        report.ended = "frame-send-failed".to_string();
+                        send_failed = true;
+                        break;
+                    }
+                    report.frames_sent = report.frames_sent.saturating_add(1);
+                    if fallback {
+                        report.codec_fallbacks = report.codec_fallbacks.saturating_add(1);
+                    }
                 }
-                report.frames_sent = report.frames_sent.saturating_add(1);
-                if fallback {
-                    report.codec_fallbacks = report.codec_fallbacks.saturating_add(1);
+                PumpPacket::Dropped(reason) => {
+                    audit(store, &auth.peer_id, "frame", &format!("dropped: {reason}"));
                 }
             }
-            Some(PumpPacket::Dropped(reason)) => {
-                audit(store, &auth.peer_id, "frame", &format!("dropped: {reason}"));
-            }
-            None => {}
         }
-        match incoming.recv_timeout(tick) {
+        if send_failed {
+            break;
+        }
+        match incoming.recv_timeout(poll_slice) {
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 report.ended = "peer-disconnected".to_string();
@@ -939,15 +1027,104 @@ mod tests {
         let report = handle
             .join()
             .unwrap_or(Err(TetherError::Invalid("join".to_string())));
-        assert!(report.is_ok());
+        assert!(
+            report.is_ok(),
+            "host report err: {report:?}, client: {result:?}"
+        );
         if let Ok(r) = report {
-            assert!(r.frames_sent >= 3);
+            assert!(
+                r.frames_sent >= 3,
+                "expected >=3 frames_sent, got {} (ended={}, client={result:?})",
+                r.frames_sent,
+                r.ended
+            );
             assert!(r.codec == "h264");
         }
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "client err: {result:?}");
         if let Ok((w, h)) = result {
             assert!(w == 640 && h == 360);
         }
+    }
+
+    /// Guard against the deadline-pacing regression: at 30 fps, the serve loop
+    /// must never drop an encoded H.264 IDR/P-frame packet.
+    #[test]
+    fn serve_one_h264_high_fps_deadline_pacing() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|_| std::process::exit(111));
+        let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+        if port == 0 {
+            return;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let cfg = ServeConfig {
+            port,
+            password: b"pw".to_vec(),
+            grants: vec![Permission::Keyboard],
+            fps: 30,
+            fake_frames: true,
+            outgoing_only: false,
+            stop: stop.clone(),
+            codec: "h264".to_string(),
+            pin_key: None,
+            share_root: Some(std::env::temp_dir()),
+        };
+        let signing = SigningKey::from_bytes(&[9u8; 32]);
+        let store = match tethercraft_store::Store::open_in_memory() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let handle = std::thread::spawn(move || serve_one(&listener, &cfg, &signing, &store));
+        let result: Result<u32, String> = (|| {
+            let stream =
+                TcpStream::connect(format!("127.0.0.1:{port}")).map_err(|e| e.to_string())?;
+            let mut sess = SessionStream::new(stream).map_err(|e| e.to_string())?;
+            let ck = SigningKey::from_bytes(&[10u8; 32]);
+            session::controller_handshake(&mut sess, "test-ctrl-30", &ck, b"pw", None)
+                .map_err(|e| e.to_string())?;
+            sess.set_frame_timeouts().map_err(|e| e.to_string())?;
+            let mut dec = session::StreamDecoder::new().map_err(|e| e.to_string())?;
+            let mut decoded = 0u32;
+            while decoded < 10 {
+                let env = sess.recv_envelope().map_err(|e| e.to_string())?;
+                if env.kind == MessageKind::FrameH264 {
+                    if dec
+                        .decode(env.kind, &env.payload)
+                        .map_err(|e| e.to_string())?
+                        .is_some()
+                    {
+                        decoded = decoded.saturating_add(1);
+                    }
+                } else if env.kind == MessageKind::SessionEnd {
+                    break;
+                }
+            }
+            let _ = sess.send_envelope(&Envelope::new(
+                MessageKind::SessionEnd,
+                [0u8; 32],
+                Vec::new(),
+            ));
+            Ok(decoded)
+        })();
+        stop.store(true, Ordering::Relaxed);
+        let report = handle
+            .join()
+            .unwrap_or(Err(TetherError::Invalid("join".to_string())));
+        assert!(
+            report.is_ok(),
+            "host report err: {report:?}, client: {result:?}"
+        );
+        if let Ok(r) = report {
+            assert!(
+                r.frames_sent >= 10,
+                "expected >=10 frames_sent, got {} (ended={}, client={result:?})",
+                r.frames_sent,
+                r.ended
+            );
+        }
+        assert!(
+            matches!(result, Ok(10)),
+            "expected 10 decoded frames, got {result:?}"
+        );
     }
 
     /// File verbs over a real session: list, download, hash. Proves the

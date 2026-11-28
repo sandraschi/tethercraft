@@ -4,6 +4,24 @@ Tier 1 exit wants two real Windows machines over Tailscale with measured latency
 This file records what has actually been measured, on which machine, so nothing
 here is estimated.
 
+## 2026-11-28, Goliath, loopback: persistent WGC + tuned OpenH264 (real 1080p)
+
+Host without `--fake-frames` (`tethercraft host --codec h264`), release build,
+persistent `CaptureStream` (WGC BGRA8 direct to `H264Encoder::encode_bgra`,
+`UsageType::ScreenContentRealTime`, `Complexity::Low`, 4 Mbps target, reused
+`YUVBuffer`, bounded `sync_channel(2)` pre-encode drop, deadline pacing).
+Measured with `tethercraft serve <peer> --frames N --json` on a 1920x1080 desktop.
+
+| Target | Frames | Wall time (incl. handshake + WGC init) | Effective fps | Wire bytes (total) | Per frame | Fallbacks |
+|---|---|---|---|---|---|---|
+| 30 fps | 30 | 1708 ms | 17.6 fps | 25,600 | 853 B | 0 |
+| 60 fps | 60 | 1846 ms | 32.5 fps | 29,104 | 485 B | 0 |
+
+Real 1080p loopback jumped from ~1.6 fps (one-shot WGC) to 32.5 fps end-to-end
+(~20x faster; steady-state after ~400 ms handshake/WGC startup is ~40+ fps)
+while keeping zero codec fallbacks and sub-KB average frame size on desktop
+content.
+
 ## 2026-11-25, Goliath, loopback: H.264 vs raw (real WGC 1080p)
 
 Host without `--fake-frames`, 10 frames each, `--fps 5`. Wall times here are
