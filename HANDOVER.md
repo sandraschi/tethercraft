@@ -35,6 +35,13 @@ a Windows SCM service from `%PROGRAMDATA%\TetherCraft\host.json`
 
 ## Last concrete action
 
+2026-11-28 e2e with the Ubuntu VM (`ubu-2404-lts`): rebuilt musl probe from
+current main, Goliath hosted `--codec raw --fake-frames`, guest ran 10
+frames plus input probe over NAT. Dial 2 ms, handshake 45 ms, 10 frames in
+1289 ms, words identical both ends, host applied the probe input with 0
+denied, frame saved in-guest as valid P6. Numbers appended to `docs/BENCH.md`;
+VM powered back off, musl target dir deleted.
+
 Peer board commit on main, all gates green (clippy with `-D warnings`, fmt
 check, whole workspace tests: 114 passed): `PeerCard` with
 addr plus pinned-key state, search box with result count, card grid with

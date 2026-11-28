@@ -45,6 +45,27 @@ two different operating systems; the host enforces permissions per message
 against a remote peer; and the frame limiter is bytes, not CPU. What it does
 not prove: latency over a real LAN or WAN, or anything about hole punching.
 
+## 2026-11-28, Goliath to Ubuntu 24.04 VirtualBox guest (repeat, synthetic raw)
+
+Same recipe as 11-24 (`ubu-2404-lts` at `clean-desktop-2026-11-22`, NAT via
+10.0.2.2, musl probe rebuilt from current main). Host: `tethercraft host
+--port 21150 --grants keyboard,file --codec raw --fake-frames`. Purpose: prove
+current main still crosses the OS boundary after the relay/MCP/service work.
+
+| Path | Measured | Notes |
+|---|---|---|
+| Dial (TCP connect through NAT) | 2 ms | identical to 11-24 |
+| Handshake (hello, welcome, SPAKE2, confirm, session start) | 45 ms | synthetic run |
+| Synthetic frames 640x360 raw, 10 fps target, 10 frames | 1289 ms total, 9216080 bytes | 9.2 MB in ~1.3 s = 7.1 MB/s, 7.8 fps |
+| Fingerprint words over the wire | `echidna kestrel lumen trail zephyr eagle wolf garnet`, identical both ends | TOFU comparison held across OSes |
+| Input with `--grants keyboard` (`--input-probe`) | host applied 1, denied 0 | zero-delta scroll through the inject path |
+| Saved frame `/home/user/live.ppm` | 691215 bytes, valid P6 640x360 header | kept in the guest for the run, not exported |
+| Host session report | `session with linux-probe: frames 10 (9216080 bytes), inputs 1, denied 0, ended peer-disconnected` | clean shutdown from the controller side |
+
+Musl probe binary was ~1 MB static; the musl target dir was deleted after the
+build (D: space) and the VM powered back off. No new bottleneck found: the
+frame rate is still raw-RGBA bandwidth bound, same as 11-24.
+
 ## 2026-11-24, Goliath, loopback (single machine)
 
 First live session, native TCP transport, both ends on the same box. This proves
