@@ -89,6 +89,7 @@ impl CapturedFrame {
 pub struct CaptureStream {
     #[cfg(windows)]
     inner: wgc::WgcStream,
+    #[cfg(windows)]
     frame_no: u64,
 }
 
