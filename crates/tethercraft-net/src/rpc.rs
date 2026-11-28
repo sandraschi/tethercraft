@@ -461,6 +461,26 @@ pub fn chat_send(sess: &mut SessionStream, text: &str) -> Result<(), TetherError
     Ok(())
 }
 
+/// Query the remote host's structured "all is well" health snapshot (CPU, RAM,
+/// GPU, disks, watched services/apps).
+pub fn health(
+    sess: &mut SessionStream,
+    req_id: u64,
+    watch: &[String],
+) -> Result<proto::HealthReport, TetherError> {
+    let req = proto::HealthReq {
+        req_id,
+        watch: watch.to_vec(),
+    };
+    let env = rpc(sess, MessageKind::HealthReq, &json_bytes(&req)?)?;
+    expect_kind(&env, MessageKind::HealthResp, "health")?;
+    let resp: proto::HealthReport = parse_json(&env.payload)?;
+    if resp.req_id != req_id {
+        return Err(TetherError::Invalid("mismatched request id".to_string()));
+    }
+    Ok(resp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

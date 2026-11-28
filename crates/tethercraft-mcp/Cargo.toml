@@ -17,6 +17,7 @@ hex = { workspace = true }
 tethercraft-core = { path = "../tethercraft-core" }
 tethercraft-proto = { path = "../tethercraft-proto" }
 tethercraft-net = { path = "../tethercraft-net" }
+tethercraft-host = { path = "../tethercraft-host" }
 tethercraft-input = { path = "../tethercraft-input" }
 tethercraft-store = { path = "../tethercraft-store" }
 

@@ -19,6 +19,7 @@ fn tool_list() -> Value {
         "tools": [
             {"name": "status", "description": "daemon, E2E cipher, and session count (read-only)"},
             {"name": "capabilities", "description": "supported vs. unsupported use cases, R1-R7 invariants, E2E transport (read-only)"},
+            {"name": "health", "description": "host all-is-well check: CPU, RAM, GPU, disks, ollama/docker/opencode/agy/cursor (local or over live session; read-only)"},
             {"name": "peers", "description": "address book peers (read-only)"},
             {"name": "peer_info", "description": "one peer row (read-only)"},
             {"name": "sessions", "description": "open live sessions (read-only)"},
@@ -201,6 +202,35 @@ fn handle(state: &mut McpState, method: &str, params: &Value) -> Value {
             ],
             "scam_resistance": "R1-R7 enforced on host"
         })),
+        "health" => {
+            let watch: Vec<String> = params
+                .get("watch")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Some(sess_name) = param_str(params, "session").filter(|s| !s.is_empty()) {
+                match state.sessions.get_mut(&sess_name) {
+                    Some(live) => {
+                        let id = live.next_req();
+                        match tethercraft_net::rpc::health(&mut live.sess, id, &watch) {
+                            Ok(rep) => {
+                                audit(&state.store, &live.peer, "health", &rep.status);
+                                ok_result(json!(rep))
+                            }
+                            Err(e) => json!({"error": e.to_string()}),
+                        }
+                    }
+                    None => json!({"error": format!("no live session {sess_name}")}),
+                }
+            } else {
+                let rep = tethercraft_host::health::collect_health(0, &watch);
+                ok_result(json!(rep))
+            }
+        }
         "peers" => match state.store.list_peers() {
             Ok(p) => ok_result(json!(p)),
             Err(e) => json!({"error": e.to_string()}),

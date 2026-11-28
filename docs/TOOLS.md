@@ -18,6 +18,7 @@ warning, verify the fingerprint words out of band), pinned key after that,
 | Verb | What |
 |---|---|
 | `status` | Daemon and onboarding state |
+| `health [peer] [--watch ollama,docker,opencode,antigravity,cursor]` | Structured "all is well" check (CPU, RAM, NVIDIA GPU, disks, watched apps); runs locally (for DevCraft/scripts) or remotely over E2E session |
 | `id` | This device id plus fingerprint words |
 | `peers` | Address book rows (id, alias, addr, tier, key state) |
 | `peer-info <peer>` | One row |
@@ -68,6 +69,7 @@ from `password_file` (never inline params).
 |---|---|---|
 | `status` | read-only | Tier, E2E cipher (`chacha20-poly1305`), peer count, open session count |
 | `capabilities` | read-only | Supported vs. unsupported use cases, R1-R7 invariants, E2E transport summary |
+| `health` | read-only | Host "all is well" check (CPU, RAM, GPU, disks, ollama/docker/opencode/agy/cursor); local if `session` omitted, or remote over E2E session |
 | `peers`, `peer_info` | read-only | Address book rows (id, alias, addr, tier, key state) |
 | `sessions` | read-only | Currently open live session peer ids |
 | `audit` | read-only | Local audit log tail (`limit`, default 50, max 500) |

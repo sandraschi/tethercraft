@@ -31,6 +31,13 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     Status,
+    Health {
+        /// Optional remote peer to check over an E2E session (omit for local machine).
+        peer: Option<String>,
+        /// Comma-separated apps/services to watch (default: ollama,docker,opencode,antigravity,cursor).
+        #[arg(long, value_delimiter = ',')]
+        watch: Vec<String>,
+    },
     Id,
     Peers,
     PeerInfo {
@@ -723,10 +730,65 @@ fn run() -> Result<(), TetherError> {
         Cmd::Status => {
             print_out(
                 cli.json,
-                "tethercraft tier1 (native, windows) - live transport pending two-machine run"
+                "tethercraft tier3 (native, windows, E2E ChaCha20-Poly1305, persistent WGC H.264)"
                     .to_string(),
-                json!({"ok": true, "tier": 1, "transport": "pending-live-run"}),
+                json!({"ok": true, "tier": 3, "transport": "native-session-e2e", "e2e_cipher": "chacha20-poly1305"}),
             );
+            Ok(())
+        }
+        Cmd::Health { peer, watch } => {
+            let rep = match peer {
+                None => tethercraft_host::health::collect_health(0, &watch),
+                Some(p) => {
+                    let password = load_password(cli.password_file.as_deref())?;
+                    let mut live = live_session(&p, &password, cli.via.as_deref())?;
+                    let rep = tethercraft_net::rpc::health(&mut live.sess, 1, &watch)?;
+                    let _ = live.sess.send_envelope(&tethercraft_proto::Envelope::new(
+                        tethercraft_proto::MessageKind::SessionEnd,
+                        [0u8; 32],
+                        Vec::new(),
+                    ));
+                    rep
+                }
+            };
+            let mut lines = Vec::new();
+            lines.push(format!(
+                "host {} ({}) - {}",
+                rep.host,
+                rep.os,
+                if rep.status == "ok" {
+                    "ALL IS WELL"
+                } else {
+                    "WARNINGS"
+                }
+            ));
+            if let Some(cpu) = rep.cpu_load_pct {
+                lines.push(format!("  cpu: {cpu}%"));
+            }
+            if let (Some(u), Some(t)) = (rep.ram_used_gb, rep.ram_total_gb) {
+                lines.push(format!("  ram: {u:.1} / {t:.1} GB"));
+            }
+            if let Some(g) = &rep.gpu {
+                lines.push(format!(
+                    "  gpu: {} ({} C, {}% util, {}/{} MiB VRAM, {:.0} W)",
+                    g.name, g.temp_c, g.util_pct, g.vram_used_mib, g.vram_total_mib, g.power_w
+                ));
+            }
+            for d in &rep.disks {
+                let flag = if d.warn { " [WARN]" } else { "" };
+                lines.push(format!(
+                    "  disk {}: {:.1}/{:.1} GB free ({}% used){flag}",
+                    d.name, d.free_gb, d.total_gb, d.used_pct
+                ));
+            }
+            for a in &rep.apps {
+                let mark = if a.running { "ok" } else { "DOWN" };
+                lines.push(format!("  app {}: {mark} ({})", a.name, a.detail));
+            }
+            if !rep.warnings.is_empty() {
+                lines.push(format!("  warnings: {}", rep.warnings.join("; ")));
+            }
+            print_out(cli.json, lines.join("\n"), json!(rep));
             Ok(())
         }
         Cmd::Id => {

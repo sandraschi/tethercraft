@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod camera;
 pub mod files;
+pub mod health;
 pub mod inject;
 pub mod ops;
 pub mod printer;
@@ -67,6 +68,8 @@ fn permission_for_kind(kind: MessageKind) -> Option<Permission> {
         | MessageKind::PakeA
         | MessageKind::PakeB
         | MessageKind::OtpProof
+        | MessageKind::HealthReq
+        | MessageKind::HealthResp
         | MessageKind::Ping
         | MessageKind::Pong => None,
     }

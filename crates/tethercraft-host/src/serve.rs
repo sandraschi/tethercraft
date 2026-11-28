@@ -571,6 +571,20 @@ pub fn serve_stream(
                             audit(store, &auth.peer_id, "chat", "ok");
                         }
                     }
+                    MessageKind::HealthReq => {
+                        let req: tethercraft_proto::HealthReq = session::parse_json(&env.payload)
+                            .unwrap_or(tethercraft_proto::HealthReq {
+                                req_id: 0,
+                                watch: Vec::new(),
+                            });
+                        let rep = crate::health::collect_health(req.req_id, &req.watch);
+                        audit(store, &auth.peer_id, "health", &rep.status);
+                        let _ = sess.send_envelope(&Envelope::new(
+                            MessageKind::HealthResp,
+                            my_pub,
+                            session::json_bytes(&rep).unwrap_or_default(),
+                        ));
+                    }
                     MessageKind::ClipboardText | MessageKind::ClipboardImage => {
                         audit(store, &auth.peer_id, "clipboard", "pending-host-sync");
                     }

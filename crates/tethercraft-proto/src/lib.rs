@@ -62,6 +62,8 @@ pub enum MessageKind {
     SyncPlan,
     SyncChunk,
     ExecRequest,
+    HealthReq,
+    HealthResp,
     Ping,
     Pong,
 }
@@ -249,6 +251,55 @@ pub struct TunnelAck {
     pub channel: u32,
     pub ok: bool,
     pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthReq {
+    pub req_id: u64,
+    #[serde(default)]
+    pub watch: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiskHealth {
+    pub name: String,
+    pub free_gb: f64,
+    pub total_gb: f64,
+    pub used_pct: u8,
+    pub warn: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuHealth {
+    pub name: String,
+    pub temp_c: u32,
+    pub util_pct: u32,
+    pub vram_used_mib: u32,
+    pub vram_total_mib: u32,
+    pub power_w: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppHealth {
+    pub name: String,
+    pub running: bool,
+    pub processes: u32,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthReport {
+    pub req_id: u64,
+    pub host: String,
+    pub os: String,
+    pub status: String,
+    pub cpu_load_pct: Option<u8>,
+    pub ram_used_gb: Option<f64>,
+    pub ram_total_gb: Option<f64>,
+    pub gpu: Option<GpuHealth>,
+    pub disks: Vec<DiskHealth>,
+    pub apps: Vec<AppHealth>,
+    pub warnings: Vec<String>,
 }
 
 /// Biggest single file block on the wire (60 KiB hex-encoded stays far below
