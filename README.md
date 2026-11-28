@@ -11,16 +11,32 @@ native protocol only, Windows only. Clean room: no RustDesk source is opened.
 > relay server and the egui controller window. No RustDesk compat, no Linux
 > or macOS.
 
+## Why TetherCraft
+
+Remote desktop tools suffer from two repeating problems: **consecutive money-grabs** by formerly free or cheap tools (LogMeIn killing its free tier, TeamViewer locking out family-support users as "commercial", AnyDesk following the same path), and **tech-support scam takeovers** where scammers talk elderly relatives into installing signed, zero-friction remote-control apps to drain their bank accounts. RustDesk broke the proprietary cloud trap with open-source self-hosting, but remains AGPL/Pro-split, GUI-first (no full CLI or MCP bus), and ad-hoc-stranger friendly. TetherCraft is a clean-room MIT/Apache-2.0 sibling with a unified GUI/CLI/MCP command bus, E2E encryption over relays, and built-in R1-R7 anti-scam defaults. Full breakdown: [docs/COMPETITIVE_ANALYSIS.md](docs/COMPETITIVE_ANALYSIS.md).
+
 ## Status
 
-Tier 0 done. Tiers 1-5 domain logic done. **Live single-machine sessions work
-today**: real SPAKE2 handshake, real WGC capture, frames over TCP, input
-injection, host policy enforced per message, audit written. Live over sessions
-too: file transfer, exec, power, TCP tunnels and chat, all permission-gated;
-rendezvous relay with bridge/claim pairing for NAT (`--via`), host as a Windows
-service from a JSON config, and a stateful MCP server with confirm-gated live
-tools. Not yet done: the two-machine LAN/Tailscale run, codecs, OS sensors. See
-`HANDOVER.md` and `docs/BENCH.md` for measured numbers.
+Tier 0 done. Tiers 1-5 domain logic done; Tier 3 security and GUI dial landed (2026-11-28, 128 workspace tests green). **Live sessions work today**: SPAKE2 handshake + ChaCha20-Poly1305 E2E session encryption (over direct TCP and relayed `--via` sessions), persistent WGC 1080p capture + vendored OpenH264 (`ScreenContentRealTime`, 32.5 fps loopback measured), input injection, host policy enforced per message, GUI in-window dial modal with masked password prompt and TOFU first-contact notice, audit written. Live over sessions too: file transfer, exec, power, TCP tunnels and chat, all permission-gated; rendezvous relay with bridge/claim pairing for NAT (`--via`), host as a Windows service from a JSON config, and a stateful MCP server with confirm-gated live tools. Not yet done: hardware H.264 MFT/NVENC encoder, two-machine LAN/Tailscale run, OS sensors. See [HANDOVER.md](HANDOVER.md) and [docs/BENCH.md](docs/BENCH.md) for measured numbers.
+
+## Install
+
+Pre-release `v0.9.0` binary (`tethercraft.exe`, unsigned lab use) and source build instructions live in [INSTALL.md](INSTALL.md). Double-clicking `start.bat` (or `.\start.ps1`) in a clone builds and launches the GUI window.
+
+## Documentation
+
+| Doc | Contents |
+|---|---|
+| [INSTALL.md](INSTALL.md) | Pre-release binary, source build, Windows host service, MCP setup, uninstall |
+| [docs/COMPETITIVE_ANALYSIS.md](docs/COMPETITIVE_ANALYSIS.md) | Remote-app money-grabs, the RustDesk story, tech-support scam mitigation (R1-R7), comparison matrix |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Crate map, SPAKE2 + ChaCha20-Poly1305 E2E crypto, persistent WGC + H.264 pipeline |
+| [HELP.md](HELP.md) | Operator quickstart tour, scam-resistance summary (R1-R7), crate sub-README links |
+| [docs/TOOLS.md](docs/TOOLS.md) | Full CLI verb reference, flags, required permissions |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Password files, identity, SQLite store, ports, service config |
+| [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | Security and scam-resistance test targets |
+| [docs/BENCH.md](docs/BENCH.md) | Measured frame rate, wire bytes, and cross-OS VM numbers |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Build gates, workspace layout, clean-room and commit rules |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common failure modes and fixes |
 
 ## Controller UI
 

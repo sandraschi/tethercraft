@@ -10,7 +10,7 @@ Derived from RESEARCH.md section 4. Each numbered item is a test target.
 6. URI handler and any IPC only pre-fill a connect dialog; they cannot change settings, import configs or start sessions without a local click. Tests: URI parse never auto-connects.
 7. Config exports: AEAD plus Argon2id passphrase; signed. Tests: export format versioned (placeholder until Tier 2 crypto lands).
 8. Updates: signed metadata and signed binaries, verified before download and before install. Tests: placeholder (Tier 4).
-9. Rendezvous and relay servers see only encrypted payloads; relay cannot read or inject frames. Tests: placeholder (Tier 3, server crate returns NotImplemented).
+9. Rendezvous and relay servers see only encrypted payloads; relay cannot read or inject frames. Tests: `net::session::e2e_session_encrypts_and_rejects_tampering` (ChaCha20-Poly1305 AEAD derived from SPAKE2 + both Ed25519 keys, monotonic nonces, 1-bit tamper rejected) and `server::bridge_connects_two_peers`.
 10. Fuzzing of every parser in CI; path traversal tests for file transfer. Tests: `proto` decode rejects trailing bytes and unknown versions; file path validator rejects `..` and absolute paths (Tier 2 manager reuses it).
 11. Scam R1: onboarding gate cannot be skipped in consumer builds; yes or not-sure forces 24 h outgoing-only. Tests: `core::onboarding` fresh install requires answer, yes starts lock window.
 12. Scam R2: every new peer is Stranger with view-only, no files/terminal/privacy/blanking/input-blocking/unattended, 30-minute cap, local recording on. Tests: `host::policy` stranger defaults, cap enforced, promotion impossible from inside a session.
