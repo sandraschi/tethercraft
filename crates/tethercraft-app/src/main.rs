@@ -389,9 +389,18 @@ fn grant_names(grants: &[tethercraft_core::Permission]) -> Vec<String> {
 }
 
 /// Open the controller GUI window. Returns after the window closes.
-fn run_gui(peers: Vec<ui::PeerCard>, live: Option<ui::LiveSource>) -> Result<(), TetherError> {
+fn run_gui(
+    peers: Vec<ui::PeerCard>,
+    live: Option<ui::LiveSource>,
+    tofu: Option<ui::TofuNotice>,
+) -> Result<(), TetherError> {
     let (outgoing, needs_answer, marker) = read_onboarding();
     let mut app = ui::ControllerUi::new(peers, outgoing, needs_answer, marker);
+    app.pinned_keys = pinned_keys_map();
+    app.on_tofu = Some(Box::new(|peer, key| {
+        let _ = tofu_record(peer, key);
+    }));
+    app.tofu_notice = tofu;
     if let Some(l) = live {
         app.set_live(l);
     }
@@ -402,6 +411,22 @@ fn run_gui(peers: Vec<ui::PeerCard>, live: Option<ui::LiveSource>) -> Result<(),
     )
     .map_err(|e| TetherError::Invalid(format!("gui failed: {e}")))?;
     Ok(())
+}
+
+fn pinned_keys_map() -> std::collections::HashMap<String, [u8; 32]> {
+    let mut out = std::collections::HashMap::new();
+    if let Ok(rows) = open_store().and_then(|s| s.list_peers()) {
+        for r in rows {
+            if let Ok(bytes) = hex::decode(r.pubkey_hex.trim()) {
+                if bytes.len() == 32 {
+                    let mut k = [0u8; 32];
+                    k.copy_from_slice(&bytes);
+                    out.insert(r.peer_id, k);
+                }
+            }
+        }
+    }
+    out
 }
 
 fn peer_list() -> Vec<ui::PeerCard> {
@@ -769,20 +794,27 @@ fn run() -> Result<(), TetherError> {
                     Ok(())
                 }
                 None => {
-                    let (live, key) = ui::connect_live_pinned(
+                    let (live, key, words) = ui::connect_live_pinned(
                         &addr,
                         &password,
                         view_only,
                         expected,
                         cli.via.as_deref(),
                     )?;
-                    if !had_pin {
+                    let tofu = if !had_pin {
                         tofu_record(&peer, &key)?;
                         eprintln!(
                             "recorded new host key for {peer}: VERIFY the words out of band before trusting it"
                         );
-                    }
-                    run_gui(peer_list(), Some(live))
+                        Some(ui::TofuNotice {
+                            peer_id: peer.clone(),
+                            words,
+                            key_hex: hex::encode(key),
+                        })
+                    } else {
+                        None
+                    };
+                    run_gui(peer_list(), Some(live), tofu)
                 }
             }
         }
@@ -1420,7 +1452,7 @@ fn run() -> Result<(), TetherError> {
             );
             Ok(())
         }
-        Cmd::Gui => run_gui(peer_list(), None),
+        Cmd::Gui => run_gui(peer_list(), None, None),
         Cmd::Server { port } => {
             let listener = std::net::TcpListener::bind(format!("0.0.0.0:{port}"))
                 .map_err(|e| TetherError::Invalid(format!("bind: {e}")))?;

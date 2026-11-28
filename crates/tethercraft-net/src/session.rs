@@ -8,9 +8,12 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::{fingerprint_words, parse_public_key, public_key_bytes, LoginRateLimiter};
+use chacha20poly1305::aead::{Aead, KeyInit};
+use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -141,9 +144,76 @@ fn relay_claim(server_addr: &str, token: &str, role: &str) -> Result<TcpStream, 
     Ok(claim)
 }
 
+struct DirCipher {
+    cipher: ChaCha20Poly1305,
+    nonce: u64,
+}
+
+impl DirCipher {
+    fn new(key: [u8; 32]) -> Self {
+        Self {
+            cipher: ChaCha20Poly1305::new((&key).into()),
+            nonce: 0,
+        }
+    }
+
+    fn next_nonce(&mut self) -> Result<[u8; 12], TetherError> {
+        if self.nonce == u64::MAX {
+            return Err(TetherError::Denied("session nonce exhausted".to_string()));
+        }
+        let n = self.nonce;
+        self.nonce = self.nonce.wrapping_add(1);
+        let mut out = [0u8; 12];
+        out[4..12].copy_from_slice(&n.to_be_bytes());
+        Ok(out)
+    }
+
+    fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, TetherError> {
+        let n = self.next_nonce()?;
+        self.cipher
+            .encrypt(Nonce::from_slice(&n), plaintext)
+            .map_err(|_| TetherError::Denied("e2e encrypt failed".to_string()))
+    }
+
+    fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, TetherError> {
+        let n = self.next_nonce()?;
+        self.cipher
+            .decrypt(Nonce::from_slice(&n), ciphertext)
+            .map_err(|_| TetherError::Denied("e2e decrypt failed: possible tampering".to_string()))
+    }
+}
+
+/// Derive independent directional ChaCha20-Poly1305 keys bound to the SPAKE2
+/// shared secret and both Ed25519 device public keys. Returns `(c2h, h2c)`.
+fn derive_session_keys(
+    pake_key: &[u8],
+    ctrl_pub: &[u8; 32],
+    host_pub: &[u8; 32],
+) -> ([u8; 32], [u8; 32]) {
+    let mut c2h = Sha256::new();
+    c2h.update(b"tethercraft-e2e-v1-c2h:");
+    c2h.update(pake_key);
+    c2h.update(ctrl_pub);
+    c2h.update(host_pub);
+    let mut k_c2h = [0u8; 32];
+    k_c2h.copy_from_slice(&c2h.finalize());
+
+    let mut h2c = Sha256::new();
+    h2c.update(b"tethercraft-e2e-v1-h2c:");
+    h2c.update(pake_key);
+    h2c.update(ctrl_pub);
+    h2c.update(host_pub);
+    let mut k_h2c = [0u8; 32];
+    k_h2c.copy_from_slice(&h2c.finalize());
+
+    (k_c2h, k_h2c)
+}
+
 pub struct SessionStream {
     stream: TcpStream,
     pub peer_key: Option<[u8; 32]>,
+    send_cipher: Option<Arc<Mutex<DirCipher>>>,
+    recv_cipher: Option<Arc<Mutex<DirCipher>>>,
 }
 
 impl SessionStream {
@@ -154,7 +224,18 @@ impl SessionStream {
         Ok(Self {
             stream,
             peer_key: None,
+            send_cipher: None,
+            recv_cipher: None,
         })
+    }
+
+    pub fn enable_e2e(&mut self, send_key: [u8; 32], recv_key: [u8; 32]) {
+        self.send_cipher = Some(Arc::new(Mutex::new(DirCipher::new(send_key))));
+        self.recv_cipher = Some(Arc::new(Mutex::new(DirCipher::new(recv_key))));
+    }
+
+    pub fn is_encrypted(&self) -> bool {
+        self.send_cipher.is_some() && self.recv_cipher.is_some()
     }
 
     pub fn set_frame_timeouts(&mut self) -> Result<(), TetherError> {
@@ -165,23 +246,48 @@ impl SessionStream {
     }
 
     /// A second handle to the same socket (one half reads, the other writes).
+    /// Prefer `clone_session` after the handshake so E2E encryption state is shared.
     pub fn clone_stream(&self) -> Result<TcpStream, TetherError> {
         self.stream
             .try_clone()
             .map_err(|e| TetherError::Invalid(format!("clone: {e}")))
     }
 
+    /// Clone the session for full-duplex reader/writer threads while sharing
+    /// the directional ChaCha20-Poly1305 AEAD state and monotonic nonces.
+    pub fn clone_session(&self) -> Result<Self, TetherError> {
+        let stream = self
+            .stream
+            .try_clone()
+            .map_err(|e| TetherError::Invalid(format!("clone: {e}")))?;
+        Ok(Self {
+            stream,
+            peer_key: self.peer_key,
+            send_cipher: self.send_cipher.clone(),
+            recv_cipher: self.recv_cipher.clone(),
+        })
+    }
+
     pub fn send_envelope(&mut self, env: &Envelope) -> Result<(), TetherError> {
-        let bytes = env.encode()?;
-        if bytes.len() > MAX_MESSAGE_BYTES {
+        let plain = env.encode()?;
+        let wire = match &self.send_cipher {
+            Some(c) => {
+                let mut guard = c
+                    .lock()
+                    .map_err(|_| TetherError::Invalid("e2e send lock poisoned".to_string()))?;
+                guard.encrypt(&plain)?
+            }
+            None => plain,
+        };
+        if wire.len() > MAX_MESSAGE_BYTES {
             return Err(TetherError::Invalid("message too large".to_string()));
         }
-        let len = bytes.len() as u32;
+        let len = wire.len() as u32;
         self.stream
             .write_all(&len.to_be_bytes())
             .map_err(|e| TetherError::Invalid(format!("send: {e}")))?;
         self.stream
-            .write_all(&bytes)
+            .write_all(&wire)
             .map_err(|e| TetherError::Invalid(format!("send: {e}")))?;
         self.stream
             .flush()
@@ -204,7 +310,16 @@ impl SessionStream {
         self.stream
             .read_exact(&mut buf)
             .map_err(|e| TetherError::Invalid(format!("recv: {e}")))?;
-        Envelope::decode(&buf)
+        let plain = match &self.recv_cipher {
+            Some(c) => {
+                let mut guard = c
+                    .lock()
+                    .map_err(|_| TetherError::Invalid("e2e recv lock poisoned".to_string()))?;
+                guard.decrypt(&buf)?
+            }
+            None => buf,
+        };
+        Envelope::decode(&plain)
     }
 
     /// Receive with a bounded wait. `Ok(None)` means the wait expired with no
@@ -238,7 +353,16 @@ impl SessionStream {
         self.stream
             .read_exact(&mut buf)
             .map_err(|e| TetherError::Invalid(format!("recv: {e}")))?;
-        Ok(Some(Envelope::decode(&buf)?))
+        let plain = match &self.recv_cipher {
+            Some(c) => {
+                let mut guard = c
+                    .lock()
+                    .map_err(|_| TetherError::Invalid("e2e recv lock poisoned".to_string()))?;
+                guard.decrypt(&buf)?
+            }
+            None => buf,
+        };
+        Ok(Some(Envelope::decode(&plain)?))
     }
 }
 
@@ -414,6 +538,11 @@ pub fn controller_handshake(
             "session key mismatch (wrong password?)".to_string(),
         ));
     }
+    // Enable ChaCha20-Poly1305 E2E encryption before SessionStart so every
+    // post-handshake envelope (including relayed traffic) is confidential
+    // and authenticated.
+    let (k_c2h, k_h2c) = derive_session_keys(&key_a, &my_pub, &host_key.to_bytes());
+    stream.enable_e2e(k_c2h, k_h2c);
     let back = recv_or_refused(stream)?;
     expect_kind(&back, MessageKind::SessionStart, "controller")?;
     let start: StartPayload = parse_json(&back.payload)?;
@@ -516,6 +645,9 @@ pub fn host_handshake(
             confirm_hex: confirm_of(&key_b),
         })?,
     ))?;
+    // Enable ChaCha20-Poly1305 E2E encryption before SessionStart.
+    let (k_c2h, k_h2c) = derive_session_keys(&key_b, &peer_key.to_bytes(), &my_pub);
+    stream.enable_e2e(k_h2c, k_c2h);
     stream.send_envelope(&Envelope::new(
         MessageKind::SessionStart,
         my_pub,
@@ -956,5 +1088,55 @@ mod tests {
         let got = dec.decode(MessageKind::Frame, &bytes).unwrap_or(None);
         assert!(got == Some((4, 4, rgba)));
         assert!(dec.decode(MessageKind::Ping, &bytes).is_err());
+    }
+
+    #[test]
+    fn e2e_session_encrypts_and_rejects_tampering() {
+        // 1. After handshake, both halves are encrypted and exchange envelopes.
+        let (mut c, mut h) = loopback_pair();
+        let ck = test_key(11);
+        let hk = test_key(12);
+        let handle = std::thread::spawn(move || {
+            let mut limiter = LoginRateLimiter::new(5, 60);
+            let auth = host_handshake(
+                &mut h,
+                &hk,
+                HostHandshake {
+                    my_id: "host-e2e",
+                    password: b"secret-pw",
+                    peer_label: "test-peer",
+                    fps: 10,
+                    grants: Vec::new(),
+                },
+                &mut limiter,
+            )?;
+            assert!(h.is_encrypted());
+            let env = h.recv_envelope()?;
+            Ok::<(HostAuth, Envelope), TetherError>((auth, env))
+        });
+        let ca = controller_handshake(&mut c, "ctrl-e2e", &ck, b"secret-pw", None);
+        assert!(ca.is_ok());
+        assert!(c.is_encrypted());
+        let sent = Envelope::new(MessageKind::ChatMsg, [0u8; 32], b"top-secret-msg".to_vec());
+        assert!(c.send_envelope(&sent).is_ok());
+        let host_res = handle.join();
+        assert!(host_res.is_ok());
+        if let Ok(Ok((_, got))) = host_res {
+            assert!(got.kind == MessageKind::ChatMsg);
+            assert!(got.payload == b"top-secret-msg");
+        }
+
+        // 2. Ciphertext hides plaintext and flipping 1 bit fails AEAD auth.
+        let (k_c2h, k_h2c) = derive_session_keys(b"shared", &[1u8; 32], &[2u8; 32]);
+        assert!(k_c2h != k_h2c);
+        let mut enc = DirCipher::new(k_c2h);
+        let mut dec = DirCipher::new(k_c2h);
+        let pt = b"sensitive desktop frame payload";
+        let mut ct = enc.encrypt(pt).unwrap_or_default();
+        assert!(!ct.is_empty());
+        assert!(!ct.windows(pt.len()).any(|w| w == pt));
+        // Flip one byte in transit (simulating a malicious relay operator).
+        ct[0] ^= 0x01;
+        assert!(matches!(dec.decrypt(&ct), Err(TetherError::Denied(_))));
     }
 }

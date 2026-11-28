@@ -142,13 +142,9 @@ fn close_tunnel(tunnels: &mut HashMap<u32, mpsc::Sender<Vec<u8>>>, channel: u32)
 
 /// Read envelopes on a dedicated thread. A blocking read is the only safe way
 /// to consume a length-prefixed stream: timing out mid-message loses bytes.
-fn spawn_reader(stream: std::net::TcpStream) -> mpsc::Receiver<Envelope> {
+fn spawn_reader(mut sess: SessionStream) -> mpsc::Receiver<Envelope> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let mut sess = match SessionStream::new(stream) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
         while let Ok(env) = sess.recv_envelope() {
             if tx.send(env).is_err() {
                 break;
@@ -468,8 +464,8 @@ pub fn serve_stream(
         cfg.codec.clone(),
     );
     // Input arrives on its own thread; the main loop only writes frames.
-    let input_stream = sess.clone_stream()?;
-    let incoming = spawn_reader(input_stream);
+    let input_sess = sess.clone_session()?;
+    let incoming = spawn_reader(input_sess);
     // Short poll slice so input wakes immediately and newly encoded frames
     // flush promptly without beating against the pump's own fps grid.
     let poll_slice = Duration::from_millis(5);

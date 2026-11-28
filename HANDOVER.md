@@ -1,18 +1,51 @@
 ---
-updated: 2026-11-28T04:04:00+01:00
+updated: 2026-11-28T10:32:00+01:00
 agent: antigravity
-status: in-progress (framerate pipeline fixed, 32.5 fps real 1080p measured)
-tags: [tethercraft, rust, remote-desktop, tier2, handover]
+status: in-progress (E2E session encryption + GUI dial/TOFU landed)
+tags: [tethercraft, rust, remote-desktop, tier3, handover]
 ---
 
-## Current state (2026-11-28 04:04)
+## Current state (2026-11-28 10:32)
 
-The deadline-pacing incident is diagnosed and fixed, persistent WGC capture is
-implemented, and OpenH264 is tuned for real-time screen content. Tree is green
-and committed (126 workspace tests passed, clippy `-D warnings` clean, `cargo
-fmt --all --check` clean).
+Tier 3 security and GUI usability items landed on top of the persistent WGC +
+H.264 framerate work. Tree is green and committed (128 workspace tests passed,
+clippy `-D warnings` clean, `cargo fmt --all --check` clean, live E2E 1080p
+loopback verified).
 
-### What changed this session
+### What changed (Tier 3 pass, 2026-11-28 10:32)
+
+1. **End-to-end ChaCha20-Poly1305 session encryption** (`crates/tethercraft-net/src/session.rs`, `crates/tethercraft-host/src/serve.rs`, `crates/tethercraft-app/src/ui.rs`):
+   - After SPAKE2 `OtpProof` verification and before `SessionStart`, both sides
+     derive independent directional AEAD keys (`k_c2h`, `k_h2c`) via SHA-256
+     bound to the SPAKE2 shared secret and both Ed25519 device public keys.
+   - Every post-handshake envelope (frames, H.264 NALs, input, files, exec,
+     chat, tunnels, `SessionEnd`) is ChaCha20-Poly1305 encrypted with strictly
+     monotonic per-direction nonces (failing closed on tamper or nonce
+     exhaustion). Relay operators can no longer read or modify session traffic.
+   - Added `SessionStream::clone_session()` sharing directional `Arc<Mutex<DirCipher>>`
+     state across full-duplex reader/writer threads in `serve.rs` and `ui.rs`.
+   - Added unit test `e2e_session_encrypts_and_rejects_tampering` proving
+     ciphertext opacity and 1-bit tamper rejection.
+2. **GUI in-window dial, password prompt, and TOFU notice** (`crates/tethercraft-app/src/ui.rs`, `crates/tethercraft-app/src/main.rs`):
+   - Clicking Connect or double-clicking an addressed peer card now opens an
+     in-window Connect modal (`DialPrompt`) with masked password input,
+     optional `--via` relay field, `View-only` toggle, Enter-to-submit, and
+     non-blocking background SPAKE2 + E2E handshake.
+   - First-contact connections record the host key to the SQLite store, update
+     the board card to pinned, and display a prominent in-window `TofuNotice`
+     banner with the 8 fingerprint words and key prefix until dismissed (both
+     for in-window dial and CLI-launched `tethercraft connect`).
+   - Added unit test `request_connect_opens_dial_prompt_and_guards_unaddressed`.
+
+### Remaining open threads
+
+- **Hardware H.264 encoder** (Media Foundation / NVENC) in `tethercraft-codec`
+  for 1080p60+ high-motion and 4K.
+- **Two-machine LAN/Tailscale bench**: blocked on second physical PC (or one
+  interactive login on `win11-automated`).
+- **`start.ps1` Floor check**: honestly off (Tier 3 workstation chrome not built).
+
+### Earlier session (2026-11-28 04:04, commit `dd9575d`)
 
 1. **Root cause and fix for `serve_one_h264_fake_session` incident** (`crates/tethercraft-host/src/serve.rs`):
    - Cause: the serve loop drained `frames.try_iter()` keeping only `latest`,

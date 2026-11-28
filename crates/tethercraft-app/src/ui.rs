@@ -8,6 +8,7 @@
 
 use chrono::{DateTime, Utc};
 use eframe::egui;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -42,6 +43,38 @@ impl AppSection {
     }
 }
 
+/// First-contact TOFU warning banner shown until the operator dismisses it.
+#[derive(Debug, Clone)]
+pub struct TofuNotice {
+    pub peer_id: String,
+    pub words: String,
+    pub key_hex: String,
+}
+
+type DialResult = Result<(LiveSource, [u8; 32], String), String>;
+pub type TofuCallback = Box<dyn Fn(&str, &[u8; 32])>;
+
+struct DialLaunch {
+    addr: String,
+    password: String,
+    view_only: bool,
+    expected: Option<[u8; 32]>,
+    via: Option<String>,
+}
+
+/// In-window connection dialog state (password prompt + background handshake).
+pub struct DialPrompt {
+    pub peer_id: String,
+    pub display_name: String,
+    pub addr: String,
+    pub expected_key: Option<[u8; 32]>,
+    pub password: String,
+    pub view_only: bool,
+    pub via: String,
+    pub in_flight: Option<mpsc::Receiver<DialResult>>,
+    pub error: Option<String>,
+}
+
 pub struct ControllerUi {
     pub board: BoardState,
     pub selected: Option<String>,
@@ -63,6 +96,10 @@ pub struct ControllerUi {
     pub last_remote: Option<(u32, u32)>,
     pub last_sent_pos: Option<(i32, i32)>,
     pub live_dead: bool,
+    pub pinned_keys: HashMap<String, [u8; 32]>,
+    pub dial_prompt: Option<DialPrompt>,
+    pub tofu_notice: Option<TofuNotice>,
+    pub on_tofu: Option<TofuCallback>,
 }
 
 /// Where session frames come from. Synthetic keeps headless CI green; Live
@@ -83,16 +120,15 @@ pub fn clamp_zoom(z: f32) -> f32 {
     z.clamp(0.25, 4.0)
 }
 
-/// Dial the host, run the PAKE handshake, and hand the socket to two threads:
-/// one pumps frames in, one drains local input out. Runs before the window opens.
+/// Dial the host, run the PAKE + E2E handshake, and hand the encrypted session
+/// to two threads: one pumps frames in, one drains local input out.
 pub fn connect_live_pinned(
     addr: &str,
     password: &[u8],
     view_only: bool,
     expected_host_key: Option<[u8; 32]>,
     via: Option<&str>,
-) -> Result<(LiveSource, [u8; 32]), tethercraft_core::TetherError> {
-    use std::net::TcpStream;
+) -> Result<(LiveSource, [u8; 32], String), tethercraft_core::TetherError> {
     use std::sync::mpsc;
     use tethercraft_net::session::{self, SessionStream};
     use tethercraft_proto::{Envelope, MessageKind};
@@ -119,7 +155,7 @@ pub fn connect_live_pinned(
         expected_host_key,
     )?;
     sess.set_frame_timeouts()?;
-    let write_stream: TcpStream = sess.clone_stream()?;
+    let mut out_sess = sess.clone_session()?;
     let my_pub = tethercraft_net::public_key_bytes(&signing);
 
     let (frame_tx, frame_rx) = mpsc::channel::<(u32, u32, Vec<u8>)>();
@@ -147,7 +183,6 @@ pub fn connect_live_pinned(
     });
 
     std::thread::spawn(move || {
-        let mut out = SessionStream::new(write_stream).map_err(|_| ()).ok();
         let mut seq = 0u64;
         while let Ok(ev) = input_rx.recv() {
             let payload = match session::json_bytes(&ev) {
@@ -161,12 +196,11 @@ pub fn connect_live_pinned(
                 InputEvent::TouchSwipe { .. } => MessageKind::TouchSwipe,
                 _ => MessageKind::InputEvent,
             };
-            if let Some(s) = out.as_mut() {
-                if s.send_envelope(&Envelope::new(kind, my_pub, payload))
-                    .is_err()
-                {
-                    break;
-                }
+            if out_sess
+                .send_envelope(&Envelope::new(kind, my_pub, payload))
+                .is_err()
+            {
+                break;
             }
         }
         let _ = seq;
@@ -176,10 +210,10 @@ pub fn connect_live_pinned(
         frames: frame_rx,
         input: input_tx,
         view_only,
-        greeting: format!("connected to {} (words: {words})", auth.host_id),
+        greeting: format!("connected to {} (E2E, words: {words})", auth.host_id),
     };
     let key = auth.host_key;
-    Ok((live, key))
+    Ok((live, key, words))
 }
 
 impl ControllerUi {
@@ -210,6 +244,10 @@ impl ControllerUi {
             last_remote: None,
             last_sent_pos: None,
             live_dead: false,
+            pinned_keys: HashMap::new(),
+            dial_prompt: None,
+            tofu_notice: None,
+            on_tofu: None,
         }
     }
 
@@ -217,8 +255,202 @@ impl ControllerUi {
         self.selected = Some(id.to_string());
     }
 
+    /// Open the in-window dial + password dialog for a peer that has an address.
+    /// Respects the R1 onboarding gate and refuses peers without an address.
+    pub fn request_connect(&mut self, peer_id: &str) {
+        if self.onboarding_open {
+            return;
+        }
+        self.select(peer_id);
+        let card = self.board.cards.iter().find(|c| c.id == peer_id).cloned();
+        match card {
+            Some(c) => match c.addr.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+                Some(addr) => {
+                    let expected_key = self.pinned_keys.get(&c.id).copied();
+                    self.dial_prompt = Some(DialPrompt {
+                        peer_id: c.id.clone(),
+                        display_name: c.display_name(),
+                        addr: addr.to_string(),
+                        expected_key,
+                        password: String::new(),
+                        view_only: false,
+                        via: String::new(),
+                        in_flight: None,
+                        error: None,
+                    });
+                }
+                None => {
+                    self.push_audit(&format!(
+                        "cannot dial {}: no address yet (run tethercraft book add {} --addr host:port)",
+                        c.id, c.id
+                    ));
+                }
+            },
+            None => {
+                self.push_audit(&format!("cannot dial unknown peer {peer_id}"));
+            }
+        }
+    }
+
+    /// Poll a background handshake spawned by the in-window dial modal.
+    fn poll_dial_result(&mut self, ctx: &egui::Context) {
+        let outcome = match self.dial_prompt.as_mut().and_then(|p| p.in_flight.as_ref()) {
+            Some(rx) => match rx.try_recv() {
+                Ok(res) => Some(res),
+                Err(mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint();
+                    None
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("dial thread exited unexpectedly".to_string()))
+                }
+            },
+            None => None,
+        };
+        if let Some(res) = outcome {
+            match res {
+                Ok((live, key, words)) => {
+                    if let Some(prompt) = self.dial_prompt.take() {
+                        if prompt.expected_key.is_none() {
+                            if let Some(cb) = &self.on_tofu {
+                                cb(&prompt.peer_id, &key);
+                            }
+                            self.pinned_keys.insert(prompt.peer_id.clone(), key);
+                            if let Some(card) =
+                                self.board.cards.iter_mut().find(|c| c.id == prompt.peer_id)
+                            {
+                                card.has_key = true;
+                            }
+                            self.tofu_notice = Some(TofuNotice {
+                                peer_id: prompt.peer_id.clone(),
+                                words: words.clone(),
+                                key_hex: hex::encode(key),
+                            });
+                            self.push_audit(&format!(
+                                "TOFU recorded new host key for {} (verify words: {})",
+                                prompt.peer_id, words
+                            ));
+                        }
+                        self.set_live(live);
+                    }
+                }
+                Err(msg) => {
+                    if let Some(prompt) = self.dial_prompt.as_mut() {
+                        prompt.in_flight = None;
+                        prompt.error = Some(msg.clone());
+                    }
+                    self.push_audit(&format!("dial failed: {msg}"));
+                }
+            }
+        }
+    }
+
+    fn render_dial_modal(&mut self, ctx: &egui::Context) {
+        let mut close_modal = false;
+        let mut launch: Option<DialLaunch> = None;
+
+        if let Some(prompt) = self.dial_prompt.as_mut() {
+            let busy = prompt.in_flight.is_some();
+            egui::Window::new(format!("Connect to {}", prompt.display_name))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.label(format!("Address: {}", prompt.addr));
+                    if prompt.expected_key.is_some() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(0, 140, 60),
+                            "Host key pinned (mismatch will be refused).",
+                        );
+                    } else {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(180, 120, 0),
+                            "First contact (TOFU): compare the 8 words out of band after connect.",
+                        );
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label("Password:");
+                        let resp = ui.add_enabled(
+                            !busy,
+                            egui::TextEdit::singleline(&mut prompt.password).password(true),
+                        );
+                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            launch = Some(DialLaunch {
+                                addr: prompt.addr.clone(),
+                                password: std::mem::take(&mut prompt.password),
+                                view_only: prompt.view_only,
+                                expected: prompt.expected_key,
+                                via: (!prompt.via.trim().is_empty())
+                                    .then(|| prompt.via.trim().to_string()),
+                            });
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Relay (--via, optional):");
+                        ui.add_enabled(!busy, egui::TextEdit::singleline(&mut prompt.via));
+                    });
+                    ui.add_enabled(
+                        !busy,
+                        egui::Checkbox::new(&mut prompt.view_only, "View-only"),
+                    );
+                    if let Some(err) = &prompt.error {
+                        ui.colored_label(egui::Color32::RED, err);
+                    }
+                    if busy {
+                        ui.label("Connecting (SPAKE2 + E2E)...");
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(!busy, egui::Button::new("Connect"))
+                            .clicked()
+                        {
+                            launch = Some(DialLaunch {
+                                addr: prompt.addr.clone(),
+                                password: std::mem::take(&mut prompt.password),
+                                view_only: prompt.view_only,
+                                expected: prompt.expected_key,
+                                via: (!prompt.via.trim().is_empty())
+                                    .then(|| prompt.via.trim().to_string()),
+                            });
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close_modal = true;
+                        }
+                    });
+                });
+
+            if let Some(req) = launch {
+                if req.password.is_empty() {
+                    prompt.error = Some("password required".to_string());
+                } else {
+                    prompt.error = None;
+                    let (tx, rx) = mpsc::channel();
+                    prompt.in_flight = Some(rx);
+                    std::thread::spawn(move || {
+                        let res = connect_live_pinned(
+                            &req.addr,
+                            req.password.as_bytes(),
+                            req.view_only,
+                            req.expected,
+                            req.via.as_deref(),
+                        )
+                        .map_err(|e| e.to_string());
+                        let _ = tx.send(res);
+                    });
+                    ctx.request_repaint();
+                }
+            }
+        }
+        if close_modal {
+            self.dial_prompt = None;
+        }
+    }
+
     /// Controller sessions stay allowed in outgoing-only mode (outgoing-only
     /// blocks hosting/incoming, not the local person reaching out).
+    #[cfg(test)]
     pub fn start_session(&mut self) {
         if self.selected.is_none() || self.onboarding_open {
             return;
@@ -239,6 +471,7 @@ impl ControllerUi {
         self.last_sent_pos = None;
         self.live_dead = false;
         self.source = FrameSource::Synthetic;
+        self.tofu_notice = None;
         self.section = AppSection::Board;
         self.push_audit("session ended by local person");
     }
@@ -558,6 +791,8 @@ impl eframe::App for ControllerUi {
             });
         });
 
+        self.poll_dial_result(ctx);
+
         if self.outgoing_only {
             egui::TopBottomPanel::top("outgoing").show(ctx, |ui| {
                 ui.colored_label(
@@ -566,6 +801,28 @@ impl eframe::App for ControllerUi {
                      If someone is on the phone telling you what to do, hang up now.",
                 );
             });
+        }
+
+        let mut dismiss_tofu = false;
+        if let Some(notice) = &self.tofu_notice {
+            egui::TopBottomPanel::top("tofu_notice").show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let key_short = &notice.key_hex[..notice.key_hex.len().min(12)];
+                    ui.colored_label(
+                        egui::Color32::from_rgb(180, 110, 0),
+                        format!(
+                            "FIRST CONTACT (TOFU): new host key ({key_short}...) pinned for {}. Verify these words out of band: {}",
+                            notice.peer_id, notice.words
+                        ),
+                    );
+                    if ui.small_button("I verified the words (dismiss)").clicked() {
+                        dismiss_tofu = true;
+                    }
+                });
+            });
+        }
+        if dismiss_tofu {
+            self.tofu_notice = None;
         }
 
         egui::SidePanel::left("peers")
@@ -581,8 +838,9 @@ impl eframe::App for ControllerUi {
                     self.board.cards.len()
                 ));
                 if ui.button("Connect").clicked() {
-                    self.show_section(AppSection::Session);
-                    self.start_session();
+                    if let Some(id) = self.selected.clone() {
+                        self.request_connect(&id);
+                    }
                 }
                 ui.separator();
                 ui.small(
@@ -723,8 +981,11 @@ impl eframe::App for ControllerUi {
             self.select(&id);
         }
         if go {
-            self.start_session();
+            if let Some(id) = self.selected.clone() {
+                self.request_connect(&id);
+            }
         }
+        self.render_dial_modal(ctx);
 
         egui::TopBottomPanel::bottom("audit").show(ctx, |ui| {
             ui.collapsing("Audit", |ui| {
@@ -915,5 +1176,41 @@ mod tests {
             ui.push_audit("x");
         }
         assert!(ui.audit.len() == 200);
+    }
+
+    #[test]
+    fn request_connect_opens_dial_prompt_and_guards_unaddressed() {
+        let mut ui = ControllerUi::new(
+            vec![
+                PeerCard {
+                    id: "desk".to_string(),
+                    alias: "Desk".to_string(),
+                    addr: Some("127.0.0.1:21120".to_string()),
+                    has_key: true,
+                    tier: "managed".to_string(),
+                },
+                card("no-addr"),
+            ],
+            false,
+            false,
+            None,
+        );
+        ui.pinned_keys.insert("desk".to_string(), [5u8; 32]);
+        ui.request_connect("no-addr");
+        assert!(ui.dial_prompt.is_none());
+        ui.request_connect("desk");
+        assert!(ui.dial_prompt.is_some());
+        if let Some(p) = &ui.dial_prompt {
+            assert!(p.addr == "127.0.0.1:21120");
+            assert!(p.expected_key == Some([5u8; 32]));
+        }
+        // Ending a session clears any lingering TOFU notice.
+        ui.tofu_notice = Some(TofuNotice {
+            peer_id: "desk".to_string(),
+            words: "alpha bravo".to_string(),
+            key_hex: "00".to_string(),
+        });
+        ui.end_session();
+        assert!(ui.tofu_notice.is_none());
     }
 }
