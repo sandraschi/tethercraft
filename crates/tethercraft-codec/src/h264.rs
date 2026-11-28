@@ -1,7 +1,7 @@
-//! H.264 software codec via Cisco's OpenH264 prebuilt (Tier 4 follow-up).
-//!
-//! The crate downloads Cisco's royalty-covered binary at build time; we never
-//! self-build (see O3). Encode: RGBA to NAL units. Decode: NAL units to RGBA.
+//! H.264 software codec via Cisco OpenH264, statically compiled from the
+//! vendored C++ source at build time (openh264 crate, `source` feature).
+//! No binary is downloaded: the build works offline and is reproducible.
+//! Encode: RGBA to NAL units. Decode: NAL units to RGBA.
 //! Even widths and heights only (chroma subsampling), which the capture path
 //! already guarantees for real frames and the tests use.
 

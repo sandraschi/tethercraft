@@ -173,7 +173,15 @@ fn spawn_pump(
         let mut n = 0u64;
         let mut enc: Option<tethercraft_codec::h264::H264Encoder> = None;
         let mut enc_dims = (0u32, 0u32);
+        // Deadline pacing: each iteration starts on the fps grid, so a slow
+        // capture or encode stretches that one period instead of shifting
+        // every later frame. Rate is max(work, per_frame), not work + sleep.
+        let mut next_tick = std::time::Instant::now();
         while !stop.load(Ordering::Relaxed) {
+            if next_tick > std::time::Instant::now() {
+                std::thread::sleep(next_tick - std::time::Instant::now());
+            }
+            next_tick = std::time::Instant::now() + per_frame;
             let frame = if fake {
                 let (meta, px) = tethercraft_capture::fake_frame(640, 360, n);
                 Some((meta.width, meta.height, px))
@@ -212,7 +220,6 @@ fn spawn_pump(
                 }
             }
             n = n.wrapping_add(1);
-            std::thread::sleep(per_frame);
         }
     });
     rx
